@@ -83,7 +83,7 @@ G_DEFINE_ABSTRACT_TYPE (GstMppEnc, gst_mpp_enc, GST_TYPE_VIDEO_ENCODER);
 /* Input isn't ARM AFBC by default */
 static GstVideoFormat DEFAULT_PROP_ARM_AFBC = FALSE;
 
-#define DEFAULT_FPS 30
+#define DEFAULT_FPS 60
 
 enum
 {
@@ -684,10 +684,9 @@ gst_mpp_enc_set_format (GstVideoEncoder * encoder, GstVideoCodecState * state)
   mpp_frame_set_hor_stride (self->mpp_frame, hstride);
   mpp_frame_set_ver_stride (self->mpp_frame, vstride);
 
-  if (!GST_VIDEO_INFO_FPS_N (info) || GST_VIDEO_INFO_FPS_N (info) > 240) {
-    GST_WARNING_OBJECT (self, "framerate (%d/%d) is insane!",
-        GST_VIDEO_INFO_FPS_N (info), GST_VIDEO_INFO_FPS_D (info));
-    GST_VIDEO_INFO_FPS_N (info) = DEFAULT_FPS;
+  if (GST_VIDEO_INFO_FPS_N(info) == 0 || GST_VIDEO_INFO_FPS_D(info) == 0) {
+    GST_VIDEO_INFO_FPS_N(info) = DEFAULT_FPS;
+    GST_VIDEO_INFO_FPS_D(info) = 1;
   }
 
   mpp_enc_cfg_set_s32 (self->mpp_cfg, "prep:format", format);
