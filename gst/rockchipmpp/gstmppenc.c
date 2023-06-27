@@ -1354,19 +1354,19 @@ no_rga:
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   g_object_class_install_property (gobject_class, PROP_BPS,
-      g_param_spec_uint ("bps", "Target BPS",
+      g_param_spec_uint ("bitrate", "Target BPS",
           "Target BPS (0 = auto calculate)",
           0, G_MAXINT, DEFAULT_PROP_BPS,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   g_object_class_install_property (gobject_class, PROP_BPS_MIN,
-      g_param_spec_uint ("bps-min", "Min BPS",
+      g_param_spec_uint ("bitrate-min", "Min BPS",
           "Min BPS (0 = auto calculate)",
           0, G_MAXINT, DEFAULT_PROP_BPS_MIN,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   g_object_class_install_property (gobject_class, PROP_BPS_MAX,
-      g_param_spec_uint ("bps-max", "Max BPS",
+      g_param_spec_uint ("bitrate-max", "Max BPS",
           "Max BPS (0 = auto calculate)",
           0, G_MAXINT, DEFAULT_PROP_BPS_MAX,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
