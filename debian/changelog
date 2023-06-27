@@ -1,3 +1,11 @@
+belabox-gstreamer1.0-rockchip (20230627-1) stable; urgency=medium
+
+  * rename, change maintainer info and versioning scheme to date format
+  * mppenc: rename the bps* properties to bitrate*
+  * gstmppenc: remove broken FPS sanity check
+
+ -- BELABOX project <belaboxproject@gmail.com>  Tue, 27 Jun 2023 18:54:39 +0000
+
 gstreamer1.0-rockchip (1.14-4) stable; urgency=medium
 
   * mppdec: Sort functions
