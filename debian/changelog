@@ -1,3 +1,9 @@
+belabox-gstreamer1.0-rockchip (20230702-1) stable; urgency=medium
+
+  * Various RGA-related fixes
+
+ -- BELABOX project <belaboxproject@gmail.com>  Sun, 02 Jul 2023 18:51:00 +0000
+
 belabox-gstreamer1.0-rockchip (20230627-1) stable; urgency=medium
 
   * rename, change maintainer info and versioning scheme to date format
