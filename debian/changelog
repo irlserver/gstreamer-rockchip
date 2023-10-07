@@ -1,3 +1,9 @@
+belabox-gstreamer1.0-rockchip (20231008-1) stable; urgency=medium
+
+  * reduce rockchip-mpp's verbosity level
+
+ -- BELABOX project <belaboxproject@gmail.com>  Sat, 07 Oct 2023 23:05:46 +0000
+
 belabox-gstreamer1.0-rockchip (20230702-1) stable; urgency=medium
 
   * Various RGA-related fixes
