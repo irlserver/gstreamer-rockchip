@@ -31,6 +31,7 @@
 #endif
 
 #include <rockchip/rk_mpi.h>
+#include <rockchip/mpp_log.h>
 
 G_BEGIN_DECLS;
 

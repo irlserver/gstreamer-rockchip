@@ -142,6 +142,8 @@ gst_mpp_enc_supported (MppCodingType mpp_type)
   MppCtx mpp_ctx;
   MppApi *mpi;
 
+  mpp_set_log_level(MPP_LOG_WARN);
+
   if (mpp_create (&mpp_ctx, &mpi))
     return FALSE;
 
