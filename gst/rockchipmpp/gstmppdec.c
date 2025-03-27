@@ -1019,7 +1019,7 @@ gst_mpp_dec_loop (GstVideoDecoder * decoder)
   GST_DEBUG_OBJECT (self, "finish frame ts=%" GST_TIME_FORMAT,
       GST_TIME_ARGS (frame->pts));
 
-  gst_video_decoder_finish_frame (decoder, frame);
+  self->task_ret = gst_video_decoder_finish_frame (decoder, frame);
 
 out:
   if (mframe) {

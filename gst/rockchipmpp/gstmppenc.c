@@ -1070,7 +1070,7 @@ gst_mpp_enc_poll_packet_locked (GstVideoEncoder * encoder)
   GST_DEBUG_OBJECT (self, "finish frame ts=%" GST_TIME_FORMAT,
       GST_TIME_ARGS (frame->pts));
 
-  gst_video_encoder_finish_frame (encoder, frame);
+  self->task_ret = gst_video_encoder_finish_frame (encoder, frame);
 
 out:
   mpp_packet_deinit (&mpkt);
@@ -1080,7 +1080,7 @@ error:
 drop:
   GST_DEBUG_OBJECT (self, "drop frame");
   gst_buffer_replace (&frame->output_buffer, NULL);
-  gst_video_encoder_finish_frame (encoder, frame);
+  self->task_ret = gst_video_encoder_finish_frame (encoder, frame);
   goto out;
 }
 
