@@ -309,13 +309,20 @@ gst_mpp_rga_convert (GstBuffer * inbuf, GstVideoInfo * src_vinfo,
 
 gboolean
 gst_mpp_rga_convert_from_mpp_frame (MppFrame * mframe,
-    GstMemory * out_mem, GstVideoInfo * dst_vinfo, gint rotation)
+    GstMemory * out_mem, GstVideoInfo * dst_vinfo, gint rotation, GstVideoCropMeta *crop)
 {
   rga_info_t src_info = { 0, };
   rga_info_t dst_info = { 0, };
 
   if (!gst_mpp_rga_info_from_mpp_frame (&src_info, mframe))
     return FALSE;
+
+  if (crop) {
+    src_info.rect.xoffset = crop->x;
+    src_info.rect.width = crop->width;
+    src_info.rect.yoffset = crop->y;
+    src_info.rect.height = crop->height;
+  }
 
   if (!gst_mpp_rga_info_from_video_info (&dst_info, dst_vinfo))
     return FALSE;
