@@ -1,3 +1,9 @@
+belabox-gstreamer1.0-rockchip (20251217-1) stable; urgency=medium
+
+  * mppvideodec: implement the previously no-op crop-rectangle option
+
+ -- BELABOX project <belaboxproject@gmail.com>  Wed, 17 Dec 2025 05:56:19 +0000
+
 belabox-gstreamer1.0-rockchip (20231008-1) stable; urgency=medium
 
   * reduce rockchip-mpp's verbosity level

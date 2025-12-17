@@ -578,7 +578,9 @@ gst_mpp_dec_apply_info_change (GstVideoDecoder * decoder, MppFrame mframe)
   dst_height = GST_VIDEO_INFO_HEIGHT (info);
 
   if (self->rotation || dst_format != src_format ||
-      dst_width != width || dst_height != height) {
+      dst_width != width || dst_height != height ||
+      self->crop_x != 0 || self->crop_y != 0 ||
+      (gint)self->crop_w != width || (gint)self->crop_h != height) {
     if (afbc || rfbc || offset_x || offset_y) {
       GST_ERROR_OBJECT (self, "unable to convert with FBC or offsets (%d, %d)",
           offset_x, offset_y);
@@ -827,7 +829,10 @@ gst_mpp_dec_rga_convert (GstVideoDecoder * decoder, MppFrame mframe,
   mem = gst_allocator_alloc (self->allocator, GST_VIDEO_INFO_SIZE (info), NULL);
   g_return_val_if_fail (mem, FALSE);
 
-  if (!gst_mpp_rga_convert_from_mpp_frame (mframe, mem, info, self->rotation)) {
+  // Crop
+  GstVideoCropMeta *crop = gst_buffer_get_video_crop_meta (buffer);
+
+  if (!gst_mpp_rga_convert_from_mpp_frame (mframe, mem, info, self->rotation, crop)) {
     GST_WARNING_OBJECT (self, "failed to convert");
     gst_memory_unref (mem);
     ret = FALSE;
