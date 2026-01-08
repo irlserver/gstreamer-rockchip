@@ -159,11 +159,14 @@ gst_mpp_enc_supported (MppCodingType mpp_type)
 gboolean
 gst_mpp_enc_video_info_align (GstVideoInfo * info)
 {
-  gint vstride = 0;
+  gint vstride;
 
   /* Allow skipping vstride aligning for RKVENC */
-  if (g_getenv ("GST_MPP_ENC_UNALIGNED_VSTRIDE"))
+  if (g_getenv ("GST_MPP_ENC_ALIGNED_VSTRIDE")) {
+    vstride = 0;
+  } else {
     vstride = GST_MPP_VIDEO_INFO_VSTRIDE (info);
+  }
 
   return gst_mpp_video_info_align (info, 0, vstride);
 }
