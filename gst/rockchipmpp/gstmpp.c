@@ -205,7 +205,12 @@ gst_mpp_rga_info_from_mpp_frame (rga_info_t * info, MppFrame mframe)
   guint height = mpp_frame_get_height (mframe);
   guint hstride = mpp_frame_get_hor_stride (mframe);
   guint vstride = mpp_frame_get_ver_stride (mframe);
+
   RgaSURF_FORMAT rga_format = gst_mpp_mpp_format_to_rga_format (mpp_format);
+  if (rga_format == RK_FORMAT_UNKNOWN) {
+    GST_ERROR ("unable to convert from MPP format %d to RGA format", mpp_format);
+    return FALSE;
+  }
 
   struct gst_mpp_format *format = GST_MPP_GET_FORMAT (mpp, mpp_format);
   if (format)
@@ -227,7 +232,12 @@ gst_mpp_rga_info_from_video_info (rga_info_t * info, GstVideoInfo * vinfo)
   guint height = GST_VIDEO_INFO_HEIGHT (vinfo);
   guint hstride = gst_mpp_get_pixel_stride (vinfo);
   guint vstride = GST_MPP_VIDEO_INFO_VSTRIDE (vinfo);
+
   RgaSURF_FORMAT rga_format = gst_mpp_gst_format_to_rga_format (format);
+  if (rga_format == RK_FORMAT_UNKNOWN) {
+    GST_ERROR ("unable to convert from GST format %d to RGA format", format);
+    return FALSE;
+  }
 
   return gst_mpp_set_rga_info (info, rga_format, width, height,
       hstride, vstride);
