@@ -843,6 +843,12 @@ gst_mpp_dec_rga_convert (GstVideoDecoder * decoder, MppFrame mframe,
   }
 
   GST_VIDEO_DECODER_STREAM_LOCK (decoder);
+
+  if (crop && ret) {
+    // We've already cropped the frame with RGA, remove the crop meta
+    gst_buffer_remove_meta(buffer, crop);
+  }
+
   return ret;
 }
 #endif
