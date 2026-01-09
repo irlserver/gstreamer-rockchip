@@ -106,36 +106,6 @@ enum
   PROP_LAST,
 };
 
-static const MppFrameFormat gst_mpp_enc_formats[] = {
-  MPP_FMT_YUV420SP,
-  MPP_FMT_YUV420P,
-  MPP_FMT_YUV422_YUYV,
-  MPP_FMT_YUV422_UYVY,
-  MPP_FMT_YUV444SP,
-  MPP_FMT_YUV444P,
-  MPP_FMT_RGB565LE,
-  MPP_FMT_BGR565LE,
-  MPP_FMT_RGB888,
-  MPP_FMT_BGR888,
-  MPP_FMT_ARGB8888,
-  MPP_FMT_ABGR8888,
-  MPP_FMT_RGBA8888,
-  MPP_FMT_BGRA8888,
-};
-
-static gboolean
-gst_mpp_enc_format_supported (MppFrameFormat format)
-{
-  guint i;
-
-  for (i = 0; i < ARRAY_SIZE (gst_mpp_enc_formats); i++) {
-    if (format == gst_mpp_enc_formats[i])
-      return TRUE;
-  }
-
-  return FALSE;
-}
-
 gboolean
 gst_mpp_enc_supported (MppCodingType mpp_type)
 {
@@ -664,7 +634,7 @@ gst_mpp_enc_set_format (GstVideoEncoder * encoder, GstVideoCodecState * state)
    * NOTE: Not checking the strides here, since they might not be the actual
    * ones (could be overrided by video-meta)
    */
-  if (self->rotation || !gst_mpp_enc_format_supported (format) ||
+  if (self->rotation || format == MPP_FMT_BUTT ||
       width != GST_VIDEO_INFO_WIDTH (info) ||
       height != GST_VIDEO_INFO_HEIGHT (info)) {
     if (!gst_mpp_use_rga ()) {
