@@ -85,8 +85,12 @@ struct gst_mpp_format gst_mpp_formats[] = {
   GST_MPP_FORMAT (YVYU, YUV422_YVYU, YVYU_422, 2, 1),
   GST_MPP_FORMAT (UYVY, YUV422_UYVY, UYVY_422, 2, 1),
   GST_MPP_FORMAT (VYUY, YUV422_VYUY, VYUY_422, 2, 1),
-  GST_MPP_FORMAT (RGB16, RGB565LE, BGR_565, 2, 0),
-  GST_MPP_FORMAT (BGR16, BGR565LE, RGB_565, 2, 0),
+  /* The encoder supposedly supports RGB16 and BGR16, but the colours look
+     wrong. It appears to be caused by the MPP_FRAME_FMT_LE_MASK flag
+     being ignored. So we'll force conversion via RGA, which works correctly */
+  // BGR_565 and RGB_565 are swapped in the RGA3 kernel driver, so swap here too
+  GST_MPP_FORMAT (RGB16, BUTT, BGR_565, 2, 0),
+  GST_MPP_FORMAT (BGR16, BUTT, RGB_565, 2, 0),
   GST_MPP_FORMAT (RGB, RGB888, RGB_888, 3, 0),
   GST_MPP_FORMAT (BGR, BGR888, BGR_888, 3, 0),
   GST_MPP_FORMAT (ARGB, ARGB8888, ARGB_8888, 4, 0),
