@@ -580,7 +580,8 @@ gst_mpp_dec_apply_info_change (GstVideoDecoder * decoder, MppFrame mframe)
   if (self->rotation || dst_format != src_format ||
       dst_width != width || dst_height != height ||
       self->crop_x != 0 || self->crop_y != 0 ||
-      (gint)self->crop_w != width || (gint)self->crop_h != height) {
+      (self->crop_w != 0 && (gint)self->crop_w != width) ||
+      (self->crop_h != 0 && (gint)self->crop_h != height)) {
     if (afbc || rfbc || offset_x || offset_y) {
       GST_ERROR_OBJECT (self, "unable to convert with FBC or offsets (%d, %d)",
           offset_x, offset_y);
