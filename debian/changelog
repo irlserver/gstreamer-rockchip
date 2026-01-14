@@ -1,3 +1,9 @@
+belabox-gstreamer1.0-rockchip (20260114-1) stable; urgency=medium
+
+  * gstmppenc: request a minimum of 2 buffers
+
+ -- BELABOX project <belaboxproject@gmail.com>  Wed, 14 Jan 2026 08:52:37 +0000
+
 belabox-gstreamer1.0-rockchip (20260104-1) stable; urgency=medium
 
   * rebase on JeffyCN's repo
