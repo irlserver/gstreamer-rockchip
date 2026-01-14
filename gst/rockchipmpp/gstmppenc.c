@@ -753,7 +753,7 @@ gst_mpp_enc_propose_allocation (GstVideoEncoder * encoder, GstQuery * query)
 
   gst_buffer_pool_set_config (pool, config);
 
-  gst_query_add_allocation_pool (query, pool, size, 0, 0);
+  gst_query_add_allocation_pool (query, pool, size, 2, 0);
   gst_query_add_allocation_param (query, self->allocator, NULL);
 
   gst_object_unref (pool);
