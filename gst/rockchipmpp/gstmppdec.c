@@ -237,7 +237,18 @@ gst_mpp_dec_reset (GstVideoDecoder * decoder, gboolean drain, gboolean final)
   self->task_ret = GST_FLOW_OK;
   self->decoded_frames = 0;
 
-  /* Clear pending frames */
+  /* Clear the output frame queue, if present */
+  if (self->ready_frames) {
+    GstVideoCodecFrame *f;
+    while (f = g_queue_pop_head(self->ready_frames)) {
+      gst_video_decoder_release_frame (decoder, f);
+    }
+
+    g_queue_free (self->ready_frames);
+    self->ready_frames = NULL;
+  }
+
+  /* Clear pending input frames */
   frames = gst_video_decoder_get_frames (decoder);
   for (; frames; frames = frames->next) {
     GstVideoCodecFrame *f = frames->data;
@@ -1058,7 +1069,48 @@ gst_mpp_dec_loop (GstVideoDecoder * decoder)
   GST_DEBUG_OBJECT (self, "finish frame ts=%" GST_TIME_FORMAT,
       GST_TIME_ARGS (frame->pts));
 
-  self->task_ret = gst_video_decoder_finish_frame (decoder, frame);
+  /* It looks like the (RK3588) decoder references the most recently returned
+     frame buffer when decoding the next frame, which means that we can't pass
+     it downstream as a writeble buffer. A downstream element modifying it
+     results in visual glitches when the decoder processes the following frame
+
+     It's an open question how the decoder maintains its full decoded picture
+     buffer, as it only seems to reference the last decoded buffer passed to
+     the application, and not any of the older ones. This might even be some
+     sort of race condition, if the encoder is making an internal reference
+     copy, but returns the original buffer before making the copy
+
+     We've considered a few options here:
+     * we could force RGA conversions to be always on, so we always pass copies
+       of the original buffer - but this has considerable overhead
+     * we can pass our buffers as read-only, and implement a custom mem_copy
+       for our buffers, which uses the RGA for an offloaded copy - but this
+       would incur the same overhead if any of the downstream elements wants
+       to make the buffer writeable
+     * or we can delay our output by one frame, and safely allow the original
+       buffer to be modified with no additional overhead
+
+    If convert is used, then we're outputting a buffer copy, and there's no
+    need to delay it
+  */
+  if (self->convert) {
+    self->task_ret = gst_video_decoder_finish_frame (decoder, frame);
+  } else {
+    if (!self->ready_frames) {
+      self->ready_frames = g_queue_new();
+      if (!self->ready_frames) goto error;
+    }
+    g_queue_push_tail(self->ready_frames, frame);
+
+    /* The threshold can be adjusted if some configurations /
+       variants keep more than one reference frame */
+    if (g_queue_get_length(self->ready_frames) > 1) {
+      GstVideoCodecFrame *output_frame = g_queue_pop_head(self->ready_frames);
+      if (output_frame) {
+        self->task_ret = gst_video_decoder_finish_frame (decoder, output_frame);
+      }
+    }
+  }
 
 out:
   if (mframe) {
