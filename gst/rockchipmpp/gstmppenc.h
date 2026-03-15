@@ -82,6 +82,10 @@ struct _GstMppEnc
   guint bps_min;
   guint bps_max;
 
+  gint fps_out;           /* output framerate numerator (0 = same as input) */
+  gint drop_mode;         /* MppEncRcDropFrmMode: 0=disabled, 1=normal, 2=pskip */
+  guint drop_threshold;   /* % over bps_max that triggers drop (default 50) */
+
   gboolean zero_copy_pkt;
 
   gboolean arm_afbc;
