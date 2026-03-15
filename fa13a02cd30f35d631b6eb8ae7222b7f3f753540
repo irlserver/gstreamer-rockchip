@@ -1,0 +1,25 @@
+gst/rockchipmpp/gstmppenc.c
+  bd3295abea7c2e06 79-81,109-111,227-250,341-349,403-417,1220-1222,1406-1423
+gst/rockchipmpp/gstmppenc.h
+  bd3295abea7c2e06 85-88
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.11",
+  "base_commit_sha": "fa13a02cd30f35d631b6eb8ae7222b7f3f753540",
+  "prompts": {
+    "bd3295abea7c2e06": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "65b4e2fb-4b5e-4096-a63a-7525f2e6c307",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "datagutt <datagutt@lekanger.no>",
+      "messages": [],
+      "total_additions": 79,
+      "total_deletions": 0,
+      "accepted_lines": 79,
+      "overriden_lines": 0
+    }
+  }
+}
