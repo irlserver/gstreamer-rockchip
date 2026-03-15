@@ -76,6 +76,9 @@ G_DEFINE_ABSTRACT_TYPE (GstMppEnc, gst_mpp_enc, GST_TYPE_VIDEO_ENCODER);
 #define DEFAULT_PROP_BPS_MAX 0  /* Auto */
 #define DEFAULT_PROP_WIDTH 0    /* Original */
 #define DEFAULT_PROP_HEIGHT 0   /* Original */
+#define DEFAULT_PROP_FPS_OUT 0          /* Same as input */
+#define DEFAULT_PROP_DROP_MODE 0       /* Disabled */
+#define DEFAULT_PROP_DROP_THRESHOLD 50 /* 50% over bps_max */
 #define DEFAULT_PROP_ZERO_COPY_PKT TRUE
 
 /* Input isn't ARM AFBC by default */
@@ -103,6 +106,9 @@ enum
   PROP_HEIGHT,
   PROP_ZERO_COPY_PKT,
   PROP_ARM_AFBC,
+  PROP_FPS_OUT,
+  PROP_DROP_MODE,
+  PROP_DROP_THRESHOLD,
   PROP_LAST,
 };
 
@@ -218,6 +224,30 @@ gst_mpp_enc_set_property (GObject * object,
       self->bps_max = bps_max;
       break;
     }
+    case PROP_FPS_OUT:{
+      gint fps_out = g_value_get_int (value);
+      if (self->fps_out == fps_out)
+        return;
+
+      self->fps_out = fps_out;
+      break;
+    }
+    case PROP_DROP_MODE:{
+      gint drop_mode = g_value_get_int (value);
+      if (self->drop_mode == drop_mode)
+        return;
+
+      self->drop_mode = drop_mode;
+      break;
+    }
+    case PROP_DROP_THRESHOLD:{
+      guint drop_threshold = g_value_get_uint (value);
+      if (self->drop_threshold == drop_threshold)
+        return;
+
+      self->drop_threshold = drop_threshold;
+      break;
+    }
     case PROP_ROTATION:{
       if (self->input_state)
         GST_WARNING_OBJECT (encoder, "unable to change rotation");
@@ -308,6 +338,15 @@ gst_mpp_enc_get_property (GObject * object,
     case PROP_ARM_AFBC:
       g_value_set_boolean (value, self->arm_afbc);
       break;
+    case PROP_FPS_OUT:
+      g_value_set_int (value, self->fps_out);
+      break;
+    case PROP_DROP_MODE:
+      g_value_set_int (value, self->drop_mode);
+      break;
+    case PROP_DROP_THRESHOLD:
+      g_value_set_uint (value, self->drop_threshold);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       return;
@@ -360,6 +399,21 @@ gst_mpp_enc_apply_properties (GstVideoEncoder * encoder)
     mpp_enc_cfg_set_s32 (self->mpp_cfg, "rc:bps_min",
         self->bps_min ? : self->bps * 1 / 16);
   }
+
+  /* Output framerate (for runtime decimation) */
+  if (self->fps_out > 0) {
+    mpp_enc_cfg_set_s32 (self->mpp_cfg, "rc:fps_out_num", self->fps_out);
+    mpp_enc_cfg_set_s32 (self->mpp_cfg, "rc:fps_out_denorm", 1);
+  } else {
+    mpp_enc_cfg_set_s32 (self->mpp_cfg, "rc:fps_out_num",
+        GST_VIDEO_INFO_FPS_N (info));
+    mpp_enc_cfg_set_s32 (self->mpp_cfg, "rc:fps_out_denorm",
+        GST_VIDEO_INFO_FPS_D (info));
+  }
+
+  /* Frame drop mode */
+  mpp_enc_cfg_set_u32 (self->mpp_cfg, "rc:drop_mode", self->drop_mode);
+  mpp_enc_cfg_set_u32 (self->mpp_cfg, "rc:drop_threshold", self->drop_threshold);
 
   if (self->mpi->control (self->mpp_ctx, MPP_ENC_SET_CFG, self->mpp_cfg)) {
     GST_WARNING_OBJECT (self, "failed to set enc cfg");
@@ -1163,6 +1217,9 @@ gst_mpp_enc_init (GstMppEnc * self)
   self->bps_max = DEFAULT_PROP_BPS_MAX;
   self->zero_copy_pkt = DEFAULT_PROP_ZERO_COPY_PKT;
   self->arm_afbc = DEFAULT_PROP_ARM_AFBC;
+  self->fps_out = DEFAULT_PROP_FPS_OUT;
+  self->drop_mode = DEFAULT_PROP_DROP_MODE;
+  self->drop_threshold = DEFAULT_PROP_DROP_THRESHOLD;
   self->prop_dirty = TRUE;
 }
 
@@ -1344,6 +1401,24 @@ no_rga:
       g_param_spec_uint ("bitrate-max", "Max BPS",
           "Max BPS (0 = auto calculate)",
           0, G_MAXINT, DEFAULT_PROP_BPS_MAX,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_FPS_OUT,
+      g_param_spec_int ("fps-out", "Output framerate",
+          "Output framerate numerator (0 = same as input)",
+          0, 256, DEFAULT_PROP_FPS_OUT,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_DROP_MODE,
+      g_param_spec_int ("drop-mode", "Frame drop mode",
+          "Frame drop mode (0=disabled, 1=normal skip, 2=pskip empty frame)",
+          0, 2, DEFAULT_PROP_DROP_MODE,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_DROP_THRESHOLD,
+      g_param_spec_uint ("drop-threshold", "Drop threshold",
+          "Percentage over bps_max that triggers frame drop",
+          0, 100, DEFAULT_PROP_DROP_THRESHOLD,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   g_object_class_install_property (gobject_class, PROP_ZERO_COPY_PKT,
