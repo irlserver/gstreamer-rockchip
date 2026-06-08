@@ -1,0 +1,25 @@
+gst/rockchipmpp/gstmpph265enc.c
+  s_165ae2829d7963::t_7f5e45c8320a53 49-53
+  s_165ae2829d7963::t_ea87bce3db07f0 225-256
+  s_165ae2829d7963::t_7ff081af93c449 291-302
+  s_165ae2829d7963::t_04b157b9d97dc7 356-363
+  s_165ae2829d7963::t_3738f33f72b197 463-485
+  s_165ae2829d7963::t_f3da5bb6ec66c9 407-410
+  s_165ae2829d7963::t_68a038e3da89ab 65-68,79-82,86-145
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.3",
+  "base_commit_sha": "fe97c8578c987cad0d5835c607d66999ffa39ac0",
+  "prompts": {},
+  "sessions": {
+    "s_165ae2829d7963": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f85543c4-75d1-4915-83ef-e4484eaaf55e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "datagutt <datagutt@lekanger.no>"
+    }
+  }
+}
