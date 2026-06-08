@@ -86,6 +86,25 @@ struct _GstMppEnc
   gint drop_mode;         /* MppEncRcDropFrmMode: 0=disabled, 1=normal, 2=pskip */
   guint drop_threshold;   /* % over bps_max that triggers drop (default 50) */
 
+  /* Rolling intra refresh: spreads I-macroblocks across frames instead of
+   * periodic IDR spikes. 0 = disabled, else number of MB rows refreshed per
+   * frame. Tuned for lossy low-latency streaming. */
+  guint intra_refresh;
+
+  /* Super-frame handling: bound the size of a single coded frame so a scene
+   * cut / keyframe cannot spike the send buffer. */
+  gint super_mode;        /* MppEncRcSuperFrameMode: 0=none, 1=drop, 2=reenc */
+  guint super_i_thd;      /* I-frame size threshold in bytes (0 = auto) */
+  guint super_p_thd;      /* P-frame size threshold in bytes (0 = auto) */
+
+  /* De-breathing: smooths the GOP bitrate "breathing" oscillation. */
+  gboolean debreath;
+  guint debreath_strength; /* [0, 35] */
+
+  /* Content-adaptive tuning. */
+  gint scene_mode;        /* 0=default, 1=ipc, 2=ipc-ptz */
+  guint anti_flicker;     /* temporal anti-flicker strength [0, 3], 0 = off */
+
   gboolean zero_copy_pkt;
 
   gboolean arm_afbc;
