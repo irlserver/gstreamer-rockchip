@@ -46,6 +46,11 @@ struct _GstMppH265Enc
   guint qp_min_i;
   guint qp_max_i;
   gint qp_ip;
+
+  gint profile;            /* MPP_PROFILE_HEVC_*: 1=main, 2=main10, 3=main-still */
+  gint tier;               /* 0=main tier, 1=high tier */
+  gint level;              /* general_level_idc (level * 30, e.g. 120 = 4.0) */
+  gboolean sao;            /* Sample Adaptive Offset filter */
 };
 
 #define parent_class gst_mpp_h265_enc_parent_class
@@ -57,6 +62,10 @@ G_DEFINE_TYPE (GstMppH265Enc, gst_mpp_h265_enc, GST_TYPE_MPP_ENC);
 #define DEFAULT_PROP_QP_MIN_I 0 /* Auto */
 #define DEFAULT_PROP_QP_MAX_I 0 /* Auto */
 #define DEFAULT_PROP_QP_IP -1   /* Auto */
+#define DEFAULT_PROP_PROFILE 1  /* MPP_PROFILE_HEVC_MAIN */
+#define DEFAULT_PROP_TIER 0     /* Main tier */
+#define DEFAULT_PROP_LEVEL 120  /* Level 4.0 */
+#define DEFAULT_PROP_SAO TRUE
 
 enum
 {
@@ -67,8 +76,73 @@ enum
   PROP_QP_MIN_I,
   PROP_QP_MAX_I,
   PROP_QP_IP,
+  PROP_PROFILE,
+  PROP_TIER,
+  PROP_LEVEL,
+  PROP_SAO,
   PROP_LAST,
 };
+
+#define GST_TYPE_MPP_H265_ENC_PROFILE (gst_mpp_h265_enc_profile_get_type ())
+static GType
+gst_mpp_h265_enc_profile_get_type (void)
+{
+  static GType profile = 0;
+
+  if (!profile) {
+    static const GEnumValue profiles[] = {
+      {1, "Main", "main"},
+      {2, "Main 10", "main10"},
+      {3, "Main Still Picture", "main-still"},
+      {0, NULL, NULL}
+    };
+    profile = g_enum_register_static ("GstMppH265Profile", profiles);
+  }
+  return profile;
+}
+
+#define GST_TYPE_MPP_H265_ENC_TIER (gst_mpp_h265_enc_tier_get_type ())
+static GType
+gst_mpp_h265_enc_tier_get_type (void)
+{
+  static GType tier = 0;
+
+  if (!tier) {
+    static const GEnumValue tiers[] = {
+      {0, "Main tier", "main"},
+      {1, "High tier", "high"},
+      {0, NULL, NULL}
+    };
+    tier = g_enum_register_static ("GstMppH265Tier", tiers);
+  }
+  return tier;
+}
+
+#define GST_TYPE_MPP_H265_ENC_LEVEL (gst_mpp_h265_enc_level_get_type ())
+static GType
+gst_mpp_h265_enc_level_get_type (void)
+{
+  static GType level = 0;
+
+  if (!level) {
+    /* value is general_level_idc (level number * 30) */
+    static const GEnumValue levels[] = {
+      {90, "Level 3", "3"},
+      {93, "Level 3.1", "3.1"},
+      {120, "Level 4", "4"},
+      {123, "Level 4.1", "4.1"},
+      {150, "Level 5", "5"},
+      {153, "Level 5.1", "5.1"},
+      {156, "Level 5.2", "5.2"},
+      {180, "Level 6", "6"},
+      {183, "Level 6.1", "6.1"},
+      {186, "Level 6.2", "6.2"},
+      {0, NULL, NULL}
+    };
+    level = g_enum_register_static ("GstMppH265Level", levels);
+  }
+  return level;
+}
 
 #define GST_MPP_H265_ENC_SIZE_CAPS \
     "width  = (int) [ 96, MAX ], height = (int) [ 64, MAX ]"
@@ -148,6 +222,38 @@ gst_mpp_h265_enc_set_property (GObject * object,
       self->qp_ip = qp_ip;
       break;
     }
+    case PROP_PROFILE:{
+      gint profile = g_value_get_enum (value);
+      if (self->profile == profile)
+        return;
+
+      self->profile = profile;
+      break;
+    }
+    case PROP_TIER:{
+      gint tier = g_value_get_enum (value);
+      if (self->tier == tier)
+        return;
+
+      self->tier = tier;
+      break;
+    }
+    case PROP_LEVEL:{
+      gint level = g_value_get_enum (value);
+      if (self->level == level)
+        return;
+
+      self->level = level;
+      break;
+    }
+    case PROP_SAO:{
+      gboolean sao = g_value_get_boolean (value);
+      if (self->sao == sao)
+        return;
+
+      self->sao = sao;
+      break;
+    }
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       return;
@@ -181,6 +287,18 @@ gst_mpp_h265_enc_get_property (GObject * object,
       break;
     case PROP_QP_IP:
       g_value_set_int (value, self->qp_ip);
+      break;
+    case PROP_PROFILE:
+      g_value_set_enum (value, self->profile);
+      break;
+    case PROP_TIER:
+      g_value_set_enum (value, self->tier);
+      break;
+    case PROP_LEVEL:
+      g_value_set_enum (value, self->level);
+      break;
+    case PROP_SAO:
+      g_value_set_boolean (value, self->sao);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -235,6 +353,14 @@ gst_mpp_h265_enc_apply_properties (GstVideoEncoder * encoder)
         self->qp_ip >= 0 ? self->qp_ip : 2);
   }
 
+  mpp_enc_cfg_set_s32 (mppenc->mpp_cfg, "h265:profile", self->profile);
+  mpp_enc_cfg_set_s32 (mppenc->mpp_cfg, "h265:tier", self->tier);
+  mpp_enc_cfg_set_s32 (mppenc->mpp_cfg, "h265:level", self->level);
+  mpp_enc_cfg_set_s32 (mppenc->mpp_cfg, "h265:sao_luma_disable",
+      self->sao ? 0 : 1);
+  mpp_enc_cfg_set_s32 (mppenc->mpp_cfg, "h265:sao_chroma_disable",
+      self->sao ? 0 : 1);
+
   if (!gst_mpp_enc_apply_properties (encoder))
     return FALSE;
 
@@ -278,6 +404,10 @@ gst_mpp_h265_enc_init (GstMppH265Enc * self)
   self->qp_min_i = DEFAULT_PROP_QP_MIN_I;
   self->qp_max_i = DEFAULT_PROP_QP_MAX_I;
   self->qp_ip = DEFAULT_PROP_QP_IP;
+  self->profile = DEFAULT_PROP_PROFILE;
+  self->tier = DEFAULT_PROP_TIER;
+  self->level = DEFAULT_PROP_LEVEL;
+  self->sao = DEFAULT_PROP_SAO;
 }
 
 static void
@@ -328,6 +458,29 @@ gst_mpp_h265_enc_class_init (GstMppH265EncClass * klass)
   g_object_class_install_property (gobject_class, PROP_QP_IP,
       g_param_spec_int ("qp-delta-ip", "Delta QP between I and P",
           "Delta QP between I and P (-1 = default)", -1, 8, DEFAULT_PROP_QP_IP,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_PROFILE,
+      g_param_spec_enum ("profile", "H265 profile",
+          "H265 profile",
+          GST_TYPE_MPP_H265_ENC_PROFILE, DEFAULT_PROP_PROFILE,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_TIER,
+      g_param_spec_enum ("tier", "H265 tier",
+          "H265 tier",
+          GST_TYPE_MPP_H265_ENC_TIER, DEFAULT_PROP_TIER,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_LEVEL,
+      g_param_spec_enum ("level", "H265 level",
+          "H265 level (4~4.1 = 1080p@30fps, 4.1 = 1080p@60fps, 5~5.2 = 4K)",
+          GST_TYPE_MPP_H265_ENC_LEVEL, DEFAULT_PROP_LEVEL,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_SAO,
+      g_param_spec_boolean ("sao", "Sample Adaptive Offset",
+          "Enable the SAO in-loop filter", DEFAULT_PROP_SAO,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   gst_element_class_add_pad_template (element_class,
