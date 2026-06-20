@@ -79,6 +79,14 @@ G_DEFINE_ABSTRACT_TYPE (GstMppEnc, gst_mpp_enc, GST_TYPE_VIDEO_ENCODER);
 #define DEFAULT_PROP_FPS_OUT 0          /* Same as input */
 #define DEFAULT_PROP_DROP_MODE 0       /* Disabled */
 #define DEFAULT_PROP_DROP_THRESHOLD 50 /* 50% over bps_max */
+#define DEFAULT_PROP_INTRA_REFRESH 0   /* Disabled */
+#define DEFAULT_PROP_SUPER_MODE MPP_ENC_RC_SUPER_FRM_NONE
+#define DEFAULT_PROP_SUPER_I_THD 0     /* Auto */
+#define DEFAULT_PROP_SUPER_P_THD 0     /* Auto */
+#define DEFAULT_PROP_DEBREATH FALSE
+#define DEFAULT_PROP_DEBREATH_STRENGTH 16
+#define DEFAULT_PROP_SCENE_MODE 0      /* Default */
+#define DEFAULT_PROP_ANTI_FLICKER 0    /* Disabled */
 #define DEFAULT_PROP_ZERO_COPY_PKT TRUE
 
 /* Input isn't ARM AFBC by default */
@@ -109,6 +117,14 @@ enum
   PROP_FPS_OUT,
   PROP_DROP_MODE,
   PROP_DROP_THRESHOLD,
+  PROP_INTRA_REFRESH,
+  PROP_SUPER_MODE,
+  PROP_SUPER_I_THD,
+  PROP_SUPER_P_THD,
+  PROP_DEBREATH,
+  PROP_DEBREATH_STRENGTH,
+  PROP_SCENE_MODE,
+  PROP_ANTI_FLICKER,
   PROP_LAST,
 };
 
@@ -248,6 +264,70 @@ gst_mpp_enc_set_property (GObject * object,
       self->drop_threshold = drop_threshold;
       break;
     }
+    case PROP_INTRA_REFRESH:{
+      guint intra_refresh = g_value_get_uint (value);
+      if (self->intra_refresh == intra_refresh)
+        return;
+
+      self->intra_refresh = intra_refresh;
+      break;
+    }
+    case PROP_SUPER_MODE:{
+      gint super_mode = g_value_get_enum (value);
+      if (self->super_mode == super_mode)
+        return;
+
+      self->super_mode = super_mode;
+      break;
+    }
+    case PROP_SUPER_I_THD:{
+      guint super_i_thd = g_value_get_uint (value);
+      if (self->super_i_thd == super_i_thd)
+        return;
+
+      self->super_i_thd = super_i_thd;
+      break;
+    }
+    case PROP_SUPER_P_THD:{
+      guint super_p_thd = g_value_get_uint (value);
+      if (self->super_p_thd == super_p_thd)
+        return;
+
+      self->super_p_thd = super_p_thd;
+      break;
+    }
+    case PROP_DEBREATH:{
+      gboolean debreath = g_value_get_boolean (value);
+      if (self->debreath == debreath)
+        return;
+
+      self->debreath = debreath;
+      break;
+    }
+    case PROP_DEBREATH_STRENGTH:{
+      guint debreath_strength = g_value_get_uint (value);
+      if (self->debreath_strength == debreath_strength)
+        return;
+
+      self->debreath_strength = debreath_strength;
+      break;
+    }
+    case PROP_SCENE_MODE:{
+      gint scene_mode = g_value_get_enum (value);
+      if (self->scene_mode == scene_mode)
+        return;
+
+      self->scene_mode = scene_mode;
+      break;
+    }
+    case PROP_ANTI_FLICKER:{
+      guint anti_flicker = g_value_get_uint (value);
+      if (self->anti_flicker == anti_flicker)
+        return;
+
+      self->anti_flicker = anti_flicker;
+      break;
+    }
     case PROP_ROTATION:{
       if (self->input_state)
         GST_WARNING_OBJECT (encoder, "unable to change rotation");
@@ -347,6 +427,30 @@ gst_mpp_enc_get_property (GObject * object,
     case PROP_DROP_THRESHOLD:
       g_value_set_uint (value, self->drop_threshold);
       break;
+    case PROP_INTRA_REFRESH:
+      g_value_set_uint (value, self->intra_refresh);
+      break;
+    case PROP_SUPER_MODE:
+      g_value_set_enum (value, self->super_mode);
+      break;
+    case PROP_SUPER_I_THD:
+      g_value_set_uint (value, self->super_i_thd);
+      break;
+    case PROP_SUPER_P_THD:
+      g_value_set_uint (value, self->super_p_thd);
+      break;
+    case PROP_DEBREATH:
+      g_value_set_boolean (value, self->debreath);
+      break;
+    case PROP_DEBREATH_STRENGTH:
+      g_value_set_uint (value, self->debreath_strength);
+      break;
+    case PROP_SCENE_MODE:
+      g_value_set_enum (value, self->scene_mode);
+      break;
+    case PROP_ANTI_FLICKER:
+      g_value_set_uint (value, self->anti_flicker);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       return;
@@ -414,6 +518,42 @@ gst_mpp_enc_apply_properties (GstVideoEncoder * encoder)
   /* Frame drop mode */
   mpp_enc_cfg_set_u32 (self->mpp_cfg, "rc:drop_mode", self->drop_mode);
   mpp_enc_cfg_set_u32 (self->mpp_cfg, "rc:drop_threshold", self->drop_threshold);
+
+  /* Rolling intra refresh (per-row). Spreads I-blocks across frames so there
+   * are no periodic IDR bitrate spikes, and gives continuous loss recovery on
+   * a lossy link. Only enabled when a non-zero row count is requested. */
+  if (self->intra_refresh) {
+    mpp_enc_cfg_set_u32 (self->mpp_cfg, "rc:refresh_en", 1);
+    mpp_enc_cfg_set_u32 (self->mpp_cfg, "rc:refresh_mode",
+        MPP_ENC_RC_INTRA_REFRESH_ROW);
+    mpp_enc_cfg_set_u32 (self->mpp_cfg, "rc:refresh_num", self->intra_refresh);
+  } else {
+    mpp_enc_cfg_set_u32 (self->mpp_cfg, "rc:refresh_en", 0);
+  }
+
+  /* Super-frame: bound a single coded frame's size so a scene cut / keyframe
+   * cannot spike the send buffer. */
+  mpp_enc_cfg_set_u32 (self->mpp_cfg, "rc:super_mode", self->super_mode);
+  if (self->super_mode != MPP_ENC_RC_SUPER_FRM_NONE) {
+    if (self->super_i_thd)
+      mpp_enc_cfg_set_u32 (self->mpp_cfg, "rc:super_i_thd", self->super_i_thd);
+    if (self->super_p_thd)
+      mpp_enc_cfg_set_u32 (self->mpp_cfg, "rc:super_p_thd", self->super_p_thd);
+  }
+
+  /* De-breathing: smooths the GOP bitrate breathing oscillation. */
+  mpp_enc_cfg_set_u32 (self->mpp_cfg, "rc:debreath_en", self->debreath ? 1 : 0);
+  if (self->debreath)
+    mpp_enc_cfg_set_u32 (self->mpp_cfg, "rc:debreath_strength",
+        self->debreath_strength);
+
+  /* Content-adaptive tuning. Only emitted when set away from default so older
+   * MPP builds that lack these keys are unaffected. */
+  if (self->scene_mode)
+    mpp_enc_cfg_set_s32 (self->mpp_cfg, "tune:scene_mode", self->scene_mode);
+  if (self->anti_flicker)
+    mpp_enc_cfg_set_s32 (self->mpp_cfg, "tune:anti_flicker_str",
+        self->anti_flicker);
 
   if (self->mpi->control (self->mpp_ctx, MPP_ENC_SET_CFG, self->mpp_cfg)) {
     GST_WARNING_OBJECT (self, "failed to set enc cfg");
@@ -1220,6 +1360,14 @@ gst_mpp_enc_init (GstMppEnc * self)
   self->fps_out = DEFAULT_PROP_FPS_OUT;
   self->drop_mode = DEFAULT_PROP_DROP_MODE;
   self->drop_threshold = DEFAULT_PROP_DROP_THRESHOLD;
+  self->intra_refresh = DEFAULT_PROP_INTRA_REFRESH;
+  self->super_mode = DEFAULT_PROP_SUPER_MODE;
+  self->super_i_thd = DEFAULT_PROP_SUPER_I_THD;
+  self->super_p_thd = DEFAULT_PROP_SUPER_P_THD;
+  self->debreath = DEFAULT_PROP_DEBREATH;
+  self->debreath_strength = DEFAULT_PROP_DEBREATH_STRENGTH;
+  self->scene_mode = DEFAULT_PROP_SCENE_MODE;
+  self->anti_flicker = DEFAULT_PROP_ANTI_FLICKER;
   self->prop_dirty = TRUE;
 }
 
@@ -1275,6 +1423,42 @@ gst_mpp_enc_rc_mode_get_type (void)
     rc_mode = g_enum_register_static ("GstMppEncRcMode", modes);
   }
   return rc_mode;
+}
+
+#define GST_TYPE_MPP_ENC_SUPER_MODE (gst_mpp_enc_super_mode_get_type ())
+static GType
+gst_mpp_enc_super_mode_get_type (void)
+{
+  static GType super_mode = 0;
+
+  if (!super_mode) {
+    static const GEnumValue modes[] = {
+      {MPP_ENC_RC_SUPER_FRM_NONE, "Disabled", "none"},
+      {MPP_ENC_RC_SUPER_FRM_DROP, "Drop oversized frames", "drop"},
+      {MPP_ENC_RC_SUPER_FRM_REENC, "Re-encode oversized frames", "reenc"},
+      {0, NULL, NULL}
+    };
+    super_mode = g_enum_register_static ("GstMppEncSuperMode", modes);
+  }
+  return super_mode;
+}
+
+#define GST_TYPE_MPP_ENC_SCENE_MODE (gst_mpp_enc_scene_mode_get_type ())
+static GType
+gst_mpp_enc_scene_mode_get_type (void)
+{
+  static GType scene_mode = 0;
+
+  if (!scene_mode) {
+    static const GEnumValue modes[] = {
+      {0, "Default", "default"},
+      {1, "IP camera", "ipc"},
+      {2, "IP camera with pan/tilt/zoom", "ipc-ptz"},
+      {0, NULL, NULL}
+    };
+    scene_mode = g_enum_register_static ("GstMppEncSceneMode", modes);
+  }
+  return scene_mode;
 }
 
 #ifdef HAVE_RGA
@@ -1419,6 +1603,55 @@ no_rga:
       g_param_spec_uint ("drop-threshold", "Drop threshold",
           "Percentage over bps_max that triggers frame drop",
           0, 100, DEFAULT_PROP_DROP_THRESHOLD,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_INTRA_REFRESH,
+      g_param_spec_uint ("intra-refresh", "Intra refresh",
+          "Rolling intra refresh: MB rows refreshed per frame "
+          "(0 = disabled, uses periodic IDR instead)",
+          0, G_MAXINT, DEFAULT_PROP_INTRA_REFRESH,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_SUPER_MODE,
+      g_param_spec_enum ("super-mode", "Super-frame mode",
+          "Bound a single coded frame's size to protect the send buffer",
+          GST_TYPE_MPP_ENC_SUPER_MODE, DEFAULT_PROP_SUPER_MODE,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_SUPER_I_THD,
+      g_param_spec_uint ("super-i-thd", "Super-frame I threshold",
+          "I-frame size threshold in bytes (0 = auto)",
+          0, G_MAXINT, DEFAULT_PROP_SUPER_I_THD,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_SUPER_P_THD,
+      g_param_spec_uint ("super-p-thd", "Super-frame P threshold",
+          "P-frame size threshold in bytes (0 = auto)",
+          0, G_MAXINT, DEFAULT_PROP_SUPER_P_THD,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_DEBREATH,
+      g_param_spec_boolean ("debreath", "De-breathing",
+          "Smooth the GOP bitrate breathing oscillation",
+          DEFAULT_PROP_DEBREATH,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_DEBREATH_STRENGTH,
+      g_param_spec_uint ("debreath-strength", "De-breathing strength",
+          "De-breathing strength (only used when debreath=true)",
+          0, 35, DEFAULT_PROP_DEBREATH_STRENGTH,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_SCENE_MODE,
+      g_param_spec_enum ("scene-mode", "Scene mode",
+          "Content-adaptive scene tuning",
+          GST_TYPE_MPP_ENC_SCENE_MODE, DEFAULT_PROP_SCENE_MODE,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_ANTI_FLICKER,
+      g_param_spec_uint ("anti-flicker", "Anti-flicker strength",
+          "Temporal anti-flicker strength (0 = disabled)",
+          0, 3, DEFAULT_PROP_ANTI_FLICKER,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   g_object_class_install_property (gobject_class, PROP_ZERO_COPY_PKT,
