@@ -336,17 +336,22 @@ gst_mpp_enc_set_property (GObject * object,
       return;
     }
     case PROP_WIDTH:{
-      if (self->input_state)
-        GST_WARNING_OBJECT (encoder, "unable to change width");
-      else
-        self->width = g_value_get_uint (value);
+      guint width = g_value_get_uint (value);
+      if (width != (guint) self->width) {
+        self->width = width;
+        /* Rescale in place on the next frame when already streaming. */
+        if (self->input_state)
+          self->res_dirty = TRUE;
+      }
       return;
     }
     case PROP_HEIGHT:{
-      if (self->input_state)
-        GST_WARNING_OBJECT (encoder, "unable to change height");
-      else
-        self->height = g_value_get_uint (value);
+      guint height = g_value_get_uint (value);
+      if (height != (guint) self->height) {
+        self->height = height;
+        if (self->input_state)
+          self->res_dirty = TRUE;
+      }
       return;
     }
     case PROP_ZERO_COPY_PKT:{
@@ -896,6 +901,105 @@ gst_mpp_enc_set_format (GstVideoEncoder * encoder, GstVideoCodecState * state)
   return gst_mpp_enc_apply_strides (encoder, hstride, vstride);
 }
 
+/*
+ * Re-derive the scaler target and encoder config from the current input caps
+ * plus the (possibly just-changed) width/height properties, without tearing the
+ * pipeline down. This mirrors the resolution-relevant half of set_format and is
+ * driven off self->input_state->info rather than a fresh caps event, so the
+ * output resolution can be stepped at runtime (the degradation ladder).
+ *
+ * ASSUMPTION (validate on hardware): MPP honours a prep:width/height change
+ * pushed via MPP_ENC_SET_CFG on a running context by reconfiguring the vepu
+ * pre-scaler and emitting a fresh IDR. If MPP instead needs a full ctx reinit,
+ * this reconfigure will misbehave and the change should be reverted in favour
+ * of a caps-reneg restart.
+ */
+static gboolean
+gst_mpp_enc_apply_pending_resolution (GstVideoEncoder * encoder)
+{
+  GstMppEnc *self = GST_MPP_ENC (encoder);
+  GstVideoInfo *info = &self->info;
+  MppFrameFormat format;
+  gint width, height, hstride, vstride;
+  GstCaps *caps;
+
+  if (!self->res_dirty || !self->input_state)
+    return TRUE;
+
+  self->res_dirty = FALSE;
+
+  *info = self->input_state->info;
+
+  if (!gst_mpp_enc_video_info_align (info))
+    return FALSE;
+
+  format = gst_mpp_gst_format_to_mpp_format (GST_VIDEO_INFO_FORMAT (info));
+  width = GST_VIDEO_INFO_WIDTH (info);
+  height = GST_VIDEO_INFO_HEIGHT (info);
+
+  if (self->rotation % 180)
+    SWAP (width, height);
+
+  width = self->width ? : width;
+  height = self->height ? : height;
+
+  if (self->rotation || format == MPP_FMT_BUTT ||
+      width != GST_VIDEO_INFO_WIDTH (info) ||
+      height != GST_VIDEO_INFO_HEIGHT (info)) {
+    if (!gst_mpp_use_rga ()) {
+      GST_ERROR_OBJECT (self, "unable to rescale without RGA");
+      return FALSE;
+    }
+
+    format = MPP_FMT_YUV420SP;
+
+    gst_mpp_video_info_update_format (info,
+        gst_mpp_mpp_format_to_gst_format (format), width, height);
+
+    if (!gst_mpp_enc_video_info_align (info))
+      return FALSE;
+  }
+
+  hstride = GST_MPP_VIDEO_INFO_HSTRIDE (info);
+  vstride = GST_MPP_VIDEO_INFO_VSTRIDE (info);
+
+  if (self->arm_afbc && (self->mpp_type == MPP_VIDEO_CodingAVC ||
+          self->mpp_type == MPP_VIDEO_CodingHEVC))
+    format |= MPP_FRAME_FBC_AFBC_V2;
+
+  GST_INFO_OBJECT (self, "rescaling to %dx%d (%dx%d)", width, height,
+      hstride, vstride);
+
+  mpp_frame_set_fmt (self->mpp_frame, format);
+  mpp_frame_set_width (self->mpp_frame, width);
+  mpp_frame_set_height (self->mpp_frame, height);
+
+  mpp_enc_cfg_set_s32 (self->mpp_cfg, "prep:format", format);
+  mpp_enc_cfg_set_s32 (self->mpp_cfg, "prep:width", width);
+  mpp_enc_cfg_set_s32 (self->mpp_cfg, "prep:height", height);
+
+  /* prep:*_stride + prop_dirty, so apply_properties pushes MPP_ENC_SET_CFG. */
+  if (!gst_mpp_enc_apply_strides (encoder, hstride, vstride))
+    return FALSE;
+  self->prop_dirty = TRUE;
+
+  if (!gst_mpp_enc_apply_properties (encoder))
+    return FALSE;
+
+  /* Renegotiate the encoded caps so downstream sees the new resolution.
+   * set_src_caps() overwrites width/height from self->info and takes ownership
+   * of the caps (via gst_video_encoder_set_output_state), so hand it a writable
+   * ref and do not unref afterwards. */
+  caps = gst_pad_get_current_caps (encoder->srcpad);
+  if (caps) {
+    caps = gst_caps_make_writable (caps);
+    if (!gst_mpp_enc_set_src_caps (encoder, caps))
+      return FALSE;
+  }
+
+  return TRUE;
+}
+
 static gboolean
 gst_mpp_enc_propose_allocation (GstVideoEncoder * encoder, GstQuery * query)
 {
@@ -1277,6 +1381,11 @@ gst_mpp_enc_handle_frame (GstVideoEncoder * encoder, GstVideoCodecFrame * frame)
         (GstTaskFunction) gst_mpp_enc_loop, encoder, NULL);
   }
 
+  /* Apply a pending runtime resolution change before converting this frame. */
+  if (G_UNLIKELY (self->res_dirty)
+      && !gst_mpp_enc_apply_pending_resolution (encoder))
+    goto not_negotiated;
+
   buffer = gst_mpp_enc_convert (encoder, frame);
   if (G_UNLIKELY (!buffer))
     goto not_negotiated;
@@ -1546,13 +1655,15 @@ gst_mpp_enc_class_init (GstMppEncClass * klass)
       g_param_spec_uint ("width", "Width",
           "Width (0 = original)",
           0, G_MAXINT, DEFAULT_PROP_WIDTH,
-          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+          G_PARAM_READWRITE | GST_PARAM_MUTABLE_PLAYING |
+          G_PARAM_STATIC_STRINGS));
 
   g_object_class_install_property (gobject_class, PROP_HEIGHT,
       g_param_spec_uint ("height", "Height",
           "Height (0 = original)",
           0, G_MAXINT, DEFAULT_PROP_HEIGHT,
-          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+          G_PARAM_READWRITE | GST_PARAM_MUTABLE_PLAYING |
+          G_PARAM_STATIC_STRINGS));
 
 no_rga:
 #endif

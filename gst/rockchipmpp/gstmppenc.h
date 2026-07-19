@@ -111,6 +111,10 @@ struct _GstMppEnc
 
   gboolean prop_dirty;
 
+  /* Set when width/height changes while the encoder is already running, so the
+   * next frame reconfigures the scaler in place instead of rejecting the change. */
+  gboolean res_dirty;
+
   MppEncCfg mpp_cfg;
   MppFrame mpp_frame;
 
