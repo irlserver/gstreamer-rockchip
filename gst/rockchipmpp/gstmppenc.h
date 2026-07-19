@@ -115,6 +115,15 @@ struct _GstMppEnc
    * next frame reconfigures the scaler in place instead of rejecting the change. */
   gboolean res_dirty;
 
+  /* Temporal SVC. 0/1 = off (flat IPPP), 2/3/4 = tsvc2/tsvc3/tsvc4
+   * hierarchical-P. Higher temporal layers are non-reference, so a downstream
+   * scheduler can drop them to shed framerate under congestion without breaking
+   * decode. ref_cfg owns the MPP reference-structure handle (NULL while off);
+   * ref_dirty requests a rebuild on the next apply. */
+  guint num_temporal_layers;
+  MppEncRefCfg ref_cfg;
+  gboolean ref_dirty;
+
   MppEncCfg mpp_cfg;
   MppFrame mpp_frame;
 

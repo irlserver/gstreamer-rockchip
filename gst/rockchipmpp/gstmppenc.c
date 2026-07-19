@@ -87,6 +87,7 @@ G_DEFINE_ABSTRACT_TYPE (GstMppEnc, gst_mpp_enc, GST_TYPE_VIDEO_ENCODER);
 #define DEFAULT_PROP_DEBREATH_STRENGTH 16
 #define DEFAULT_PROP_SCENE_MODE 0      /* Default */
 #define DEFAULT_PROP_ANTI_FLICKER 0    /* Disabled */
+#define DEFAULT_PROP_NUM_TEMPORAL_LAYERS 0 /* Off (flat IPPP) */
 #define DEFAULT_PROP_ZERO_COPY_PKT TRUE
 
 /* Input isn't ARM AFBC by default */
@@ -125,6 +126,7 @@ enum
   PROP_DEBREATH_STRENGTH,
   PROP_SCENE_MODE,
   PROP_ANTI_FLICKER,
+  PROP_NUM_TEMPORAL_LAYERS,
   PROP_LAST,
 };
 
@@ -365,6 +367,15 @@ gst_mpp_enc_set_property (GObject * object,
         self->arm_afbc = g_value_get_boolean (value);
       return;
     }
+    case PROP_NUM_TEMPORAL_LAYERS:{
+      guint layers = g_value_get_uint (value);
+      if (layers != self->num_temporal_layers) {
+        self->num_temporal_layers = layers;
+        /* Rebuild the reference structure on the next apply. */
+        self->ref_dirty = TRUE;
+      }
+      break;
+    }
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       return;
@@ -456,10 +467,143 @@ gst_mpp_enc_get_property (GObject * object,
     case PROP_ANTI_FLICKER:
       g_value_set_uint (value, self->anti_flicker);
       break;
+    case PROP_NUM_TEMPORAL_LAYERS:
+      g_value_set_uint (value, self->num_temporal_layers);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       return;
   }
+}
+
+/*
+ * Build and apply the temporal-SVC reference structure for
+ * self->num_temporal_layers (2/3/4 -> tsvc2/3/4). Frames in higher temporal
+ * layers are non-reference, so a downstream scheduler can drop the top layer(s)
+ * to halve/quarter framerate without breaking decode. The layer tables are a
+ * direct port of MPP's own mpi_enc_gen_ref_cfg reference implementation.
+ *
+ * num_temporal_layers < 2 resets to MPP's default flat IPPP structure. The
+ * reference config change restarts the GOP (a fresh IDR), which is the intended
+ * behaviour for a hierarchical-P transition.
+ */
+static gboolean
+gst_mpp_enc_apply_ref_cfg (GstVideoEncoder * encoder)
+{
+  GstMppEnc *self = GST_MPP_ENC (encoder);
+  MppEncRefLtFrmCfg lt_ref[4];
+  MppEncRefStFrmCfg st_ref[16];
+  RK_S32 lt_cnt = 0;
+  RK_S32 st_cnt = 0;
+
+  if (self->num_temporal_layers < 2) {
+    /* NULL ref cfg restores MPP's default (flat IPPP) references. */
+    if (self->mpi->control (self->mpp_ctx, MPP_ENC_SET_REF_CFG, NULL)) {
+      GST_WARNING_OBJECT (self, "failed to reset reference cfg");
+      return FALSE;
+    }
+    GST_INFO_OBJECT (self, "temporal layers disabled (flat IPPP)");
+    return TRUE;
+  }
+
+  if (!self->ref_cfg && mpp_enc_ref_cfg_init (&self->ref_cfg))
+    return FALSE;
+  mpp_enc_ref_cfg_reset (self->ref_cfg);
+
+  memset (lt_ref, 0, sizeof (lt_ref));
+  memset (st_ref, 0, sizeof (st_ref));
+
+  switch (self->num_temporal_layers) {
+    case 4:{
+      /* tsvc4: 4 temporal layers, one long-term ref anchoring the base. */
+      lt_cnt = 1;
+      lt_ref[0].lt_idx = 0;
+      lt_ref[0].temporal_id = 0;
+      lt_ref[0].ref_mode = REF_TO_PREV_LT_REF;
+      lt_ref[0].lt_gap = 8;
+      lt_ref[0].lt_delay = 0;
+
+      st_cnt = 9;
+      st_ref[0].is_non_ref = 0;
+      st_ref[0].temporal_id = 0;
+      st_ref[0].ref_mode = REF_TO_TEMPORAL_LAYER;
+      st_ref[1].is_non_ref = 1;
+      st_ref[1].temporal_id = 3;
+      st_ref[1].ref_mode = REF_TO_PREV_REF_FRM;
+      st_ref[2].is_non_ref = 0;
+      st_ref[2].temporal_id = 2;
+      st_ref[2].ref_mode = REF_TO_PREV_REF_FRM;
+      st_ref[3].is_non_ref = 1;
+      st_ref[3].temporal_id = 3;
+      st_ref[3].ref_mode = REF_TO_PREV_REF_FRM;
+      st_ref[4].is_non_ref = 0;
+      st_ref[4].temporal_id = 1;
+      st_ref[4].ref_mode = REF_TO_PREV_LT_REF;
+      st_ref[5].is_non_ref = 1;
+      st_ref[5].temporal_id = 3;
+      st_ref[5].ref_mode = REF_TO_PREV_REF_FRM;
+      st_ref[6].is_non_ref = 0;
+      st_ref[6].temporal_id = 2;
+      st_ref[6].ref_mode = REF_TO_PREV_REF_FRM;
+      st_ref[7].is_non_ref = 1;
+      st_ref[7].temporal_id = 3;
+      st_ref[7].ref_mode = REF_TO_PREV_REF_FRM;
+      st_ref[8].is_non_ref = 0;
+      st_ref[8].temporal_id = 0;
+      st_ref[8].ref_mode = REF_TO_TEMPORAL_LAYER;
+    } break;
+    case 3:{
+      /* tsvc3: 3 temporal layers. */
+      st_cnt = 5;
+      st_ref[0].is_non_ref = 0;
+      st_ref[0].temporal_id = 0;
+      st_ref[0].ref_mode = REF_TO_TEMPORAL_LAYER;
+      st_ref[1].is_non_ref = 1;
+      st_ref[1].temporal_id = 2;
+      st_ref[1].ref_mode = REF_TO_PREV_REF_FRM;
+      st_ref[2].is_non_ref = 0;
+      st_ref[2].temporal_id = 1;
+      st_ref[2].ref_mode = REF_TO_PREV_REF_FRM;
+      st_ref[3].is_non_ref = 1;
+      st_ref[3].temporal_id = 2;
+      st_ref[3].ref_mode = REF_TO_PREV_REF_FRM;
+      st_ref[4].is_non_ref = 0;
+      st_ref[4].temporal_id = 0;
+      st_ref[4].ref_mode = REF_TO_TEMPORAL_LAYER;
+    } break;
+    default:{                   /* 2 */
+      /* tsvc2: 2 temporal layers. */
+      st_cnt = 3;
+      st_ref[0].is_non_ref = 0;
+      st_ref[0].temporal_id = 0;
+      st_ref[0].ref_mode = REF_TO_TEMPORAL_LAYER;
+      st_ref[1].is_non_ref = 1;
+      st_ref[1].temporal_id = 1;
+      st_ref[1].ref_mode = REF_TO_PREV_REF_FRM;
+      st_ref[2].is_non_ref = 0;
+      st_ref[2].temporal_id = 0;
+      st_ref[2].ref_mode = REF_TO_PREV_REF_FRM;
+    } break;
+  }
+
+  mpp_enc_ref_cfg_set_cfg_cnt (self->ref_cfg, lt_cnt, st_cnt);
+  if (lt_cnt)
+    mpp_enc_ref_cfg_add_lt_cfg (self->ref_cfg, lt_cnt, lt_ref);
+  if (st_cnt)
+    mpp_enc_ref_cfg_add_st_cfg (self->ref_cfg, st_cnt, st_ref);
+
+  if (mpp_enc_ref_cfg_check (self->ref_cfg)) {
+    GST_WARNING_OBJECT (self, "temporal-layer ref cfg check failed");
+    return FALSE;
+  }
+
+  if (self->mpi->control (self->mpp_ctx, MPP_ENC_SET_REF_CFG, self->ref_cfg)) {
+    GST_WARNING_OBJECT (self, "failed to set temporal-layer ref cfg");
+    return FALSE;
+  }
+
+  GST_INFO_OBJECT (self, "temporal layers: tsvc%u enabled", self->num_temporal_layers);
+  return TRUE;
 }
 
 gboolean
@@ -473,6 +617,13 @@ gst_mpp_enc_apply_properties (GstVideoEncoder * encoder)
     return TRUE;
 
   self->prop_dirty = FALSE;
+
+  /* Apply a pending temporal-layer reference-structure change before the rest
+   * of the config; the ref cfg governs the GOP structure the RC then sizes to. */
+  if (self->ref_dirty) {
+    self->ref_dirty = FALSE;
+    gst_mpp_enc_apply_ref_cfg (encoder);
+  }
 
   if (self->mpi->control (self->mpp_ctx, MPP_ENC_SET_SEI_CFG, &self->sei_mode))
     GST_WARNING_OBJECT (self, "failed to set sei mode");
@@ -739,6 +890,10 @@ gst_mpp_enc_stop (GstVideoEncoder * encoder)
   g_mutex_clear (&self->mutex);
 
   mpp_enc_cfg_deinit (self->mpp_cfg);
+  if (self->ref_cfg) {
+    mpp_enc_ref_cfg_deinit (&self->ref_cfg);
+    self->ref_cfg = NULL;
+  }
   mpp_frame_set_buffer (self->mpp_frame, NULL);
   mpp_frame_deinit (&self->mpp_frame);
   mpp_destroy (self->mpp_ctx);
@@ -1764,6 +1919,14 @@ no_rga:
           "Temporal anti-flicker strength (0 = disabled)",
           0, 3, DEFAULT_PROP_ANTI_FLICKER,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_NUM_TEMPORAL_LAYERS,
+      g_param_spec_uint ("num-temporal-layers", "Temporal layers",
+          "Temporal SVC layers (0/1 = off, 2/3/4 = tsvc2/3/4 hierarchical-P; "
+          "higher layers are droppable to reduce framerate under congestion)",
+          0, 4, DEFAULT_PROP_NUM_TEMPORAL_LAYERS,
+          G_PARAM_READWRITE | GST_PARAM_MUTABLE_PLAYING |
+          G_PARAM_STATIC_STRINGS));
 
   g_object_class_install_property (gobject_class, PROP_ZERO_COPY_PKT,
       g_param_spec_boolean ("zero-copy-pkt", "Zero-copy encoded packet",
