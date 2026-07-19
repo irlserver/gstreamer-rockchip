@@ -1,0 +1,28 @@
+gst/rockchipmpp/gstmppenc.h
+  s_ca3b0ea9c69fdc::t_9e941735671c1a 118-126
+gst/rockchipmpp/gstmppenc.c
+  s_ca3b0ea9c69fdc::t_5637288d253402 893-896
+  s_ca3b0ea9c69fdc::t_437e88d139e5ad 1923-1930
+  s_ca3b0ea9c69fdc::t_667dc5a17d84cb 90
+  s_ca3b0ea9c69fdc::t_367cab6cad49a8 129
+  s_ca3b0ea9c69fdc::t_c95458a3591166 470-472
+  s_ca3b0ea9c69fdc::t_a9aaa708023081 370-378
+  s_ca3b0ea9c69fdc::t_b3b74bbd860792 479-608,621-626
+  s_ca3b0ea9c69fdc::t_92c1aae1fd1533 627
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "755aeb9a3f0f3d5e80c3f71a52d5dff7ce50f8b6",
+  "prompts": {},
+  "sessions": {
+    "s_ca3b0ea9c69fdc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8bad34f6-bce4-4d55-b353-d66d44053d8e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "datagutt <datagutt@lekanger.no>"
+    }
+  }
+}
