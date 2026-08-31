@@ -106,7 +106,8 @@ struct _GstMppDecClass
     gboolean (*startup) (GstVideoDecoder * decoder);
     MppPacket (*get_mpp_packet) (GstVideoDecoder * decoder,
       GstMapInfo * mapinfo);
-    gboolean (*shutdown) (GstVideoDecoder * decoder, gboolean drain);
+    gboolean (*shutdown) (GstVideoDecoder * decoder, gboolean drain,
+      GstFlowReturn * shutdown_result);
 };
 
 G_DEFINE_AUTOPTR_CLEANUP_FUNC (GstMppDec, gst_object_unref);
