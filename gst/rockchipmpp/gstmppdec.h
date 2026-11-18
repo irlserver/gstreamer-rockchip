@@ -86,6 +86,8 @@ struct _GstMppDec
   gboolean use_mpp_pts;
   GstClockTime mpp_delta_pts;
 
+  guint nal_length_size;
+
   guint32 decoded_frames;
 
   GstVideoCodecFrame *last_frame;
@@ -104,10 +106,8 @@ struct _GstMppDecClass
     gboolean (*startup) (GstVideoDecoder * decoder);
     MppPacket (*get_mpp_packet) (GstVideoDecoder * decoder,
       GstMapInfo * mapinfo);
-    MPP_RET (*send_mpp_packet) (GstVideoDecoder * decoder,
-      MppPacket mpkt, gint timeout_ms);
-    MppFrame (*poll_mpp_frame) (GstVideoDecoder * decoder, gint timeout_ms);
-    gboolean (*shutdown) (GstVideoDecoder * decoder, gboolean drain);
+    gboolean (*shutdown) (GstVideoDecoder * decoder, gboolean drain,
+      GstFlowReturn * shutdown_result);
 };
 
 G_DEFINE_AUTOPTR_CLEANUP_FUNC (GstMppDec, gst_object_unref);
@@ -115,7 +115,22 @@ GType gst_mpp_dec_get_type (void);
 
 #define GST_FLOW_TIMEOUT GST_FLOW_CUSTOM_ERROR_1
 
-#define MPP_DEC_OUT_FORMATS "NV12, NV16, NV12_10LE40, NV16_10LE40"
+#define MPP_DEC_OUT_FORMATS_BASE "NV12, NV16"
+
+#ifdef HAVE_NV12_10LE40
+#define MPP_DEC_OUT_FORMAT_NV12_10LE40 ", NV12_10LE40"
+#else
+#define MPP_DEC_OUT_FORMAT_NV12_10LE40 ""
+#endif
+
+#ifdef HAVE_NV16_10LE40
+#define MPP_DEC_OUT_FORMAT_NV16_10LE40 ", NV16_10LE40"
+#else
+#define MPP_DEC_OUT_FORMAT_NV16_10LE40 ""
+#endif
+
+#define MPP_DEC_OUT_FORMATS MPP_DEC_OUT_FORMATS_BASE \
+    MPP_DEC_OUT_FORMAT_NV12_10LE40 MPP_DEC_OUT_FORMAT_NV16_10LE40
 
 #ifdef HAVE_RGA
 #define MPP_DEC_FORMATS MPP_DEC_OUT_FORMATS "," GST_RGA_FORMATS

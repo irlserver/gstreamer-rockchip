@@ -45,9 +45,17 @@ struct _GstMppJpegEnc
   guint qf_max;
 };
 
+typedef struct
+{
+  guint q_factor;
+  guint qf_min;
+  guint qf_max;
+} GstMppJpegEncPropertiesSnapshot;
+
 #define parent_class gst_mpp_jpeg_enc_parent_class
 G_DEFINE_TYPE (GstMppJpegEnc, gst_mpp_jpeg_enc, GST_TYPE_MPP_ENC);
 
+#define DEFAULT_PROP_RC_MODE MPP_ENC_RC_MODE_FIXQP
 #define DEFAULT_PROP_Q_FACTOR 80
 #define DEFAULT_PROP_QF_MIN 1
 #define DEFAULT_PROP_QF_MAX 99
@@ -72,10 +80,13 @@ GST_STATIC_PAD_TEMPLATE ("src",
         GST_MPP_JPEG_ENC_SIZE_CAPS "," "sof-marker = { 0 }"));
 
 static GstStaticPadTemplate gst_mpp_jpeg_enc_sink_template =
-GST_STATIC_PAD_TEMPLATE ("sink",
+    GST_STATIC_PAD_TEMPLATE ("sink",
     GST_PAD_SINK,
     GST_PAD_ALWAYS,
     GST_STATIC_CAPS ("video/x-raw,"
+        "format = (string) { " MPP_ENC_FORMATS " }, "
+        GST_MPP_JPEG_ENC_SIZE_CAPS ";"
+        "video/x-raw(memory:DMABuf),"
         "format = (string) { " MPP_ENC_FORMATS " }, "
         GST_MPP_JPEG_ENC_SIZE_CAPS));
 
@@ -86,12 +97,14 @@ gst_mpp_jpeg_enc_set_property (GObject * object,
   GstVideoEncoder *encoder = GST_VIDEO_ENCODER (object);
   GstMppJpegEnc *self = GST_MPP_JPEG_ENC (encoder);
   GstMppEnc *mppenc = GST_MPP_ENC (encoder);
+  gboolean invalid = FALSE;
 
+  GST_MPP_ENC_PROP_LOCK (encoder);
   switch (prop_id) {
     case PROP_Q_FACTOR:{
       guint q_factor = g_value_get_uint (value);
       if (self->q_factor == q_factor)
-        return;
+        goto out;
 
       self->q_factor = q_factor;
       break;
@@ -99,7 +112,7 @@ gst_mpp_jpeg_enc_set_property (GObject * object,
     case PROP_QF_MIN:{
       guint qf_min = g_value_get_uint (value);
       if (self->qf_min == qf_min)
-        return;
+        goto out;
 
       self->qf_min = qf_min;
       break;
@@ -107,17 +120,22 @@ gst_mpp_jpeg_enc_set_property (GObject * object,
     case PROP_QF_MAX:{
       guint qf_max = g_value_get_uint (value);
       if (self->qf_max == qf_max)
-        return;
+        goto out;
 
       self->qf_max = qf_max;
       break;
     }
     default:
-      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
-      return;
+      invalid = TRUE;
+      goto out;
   }
 
   mppenc->prop_dirty = TRUE;
+
+out:
+  GST_MPP_ENC_PROP_UNLOCK (encoder);
+  if (invalid)
+    G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
 }
 
 static void
@@ -126,7 +144,9 @@ gst_mpp_jpeg_enc_get_property (GObject * object,
 {
   GstVideoEncoder *encoder = GST_VIDEO_ENCODER (object);
   GstMppJpegEnc *self = GST_MPP_JPEG_ENC (encoder);
+  gboolean invalid = FALSE;
 
+  GST_MPP_ENC_PROP_LOCK (encoder);
   switch (prop_id) {
     case PROP_Q_FACTOR:
       g_value_set_uint (value, self->q_factor);
@@ -138,25 +158,49 @@ gst_mpp_jpeg_enc_get_property (GObject * object,
       g_value_set_uint (value, self->qf_max);
       break;
     default:
-      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+      invalid = TRUE;
       break;
   }
+  GST_MPP_ENC_PROP_UNLOCK (encoder);
+
+  if (invalid)
+    G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+}
+
+static void
+gst_mpp_jpeg_enc_snapshot_properties (GstVideoEncoder * encoder,
+    gpointer snapshot)
+{
+  GstMppJpegEnc *self = GST_MPP_JPEG_ENC (encoder);
+  GstMppJpegEncPropertiesSnapshot *properties = snapshot;
+
+  properties->q_factor = self->q_factor;
+  properties->qf_min = self->qf_min;
+  properties->qf_max = self->qf_max;
+}
+
+static gboolean
+gst_mpp_jpeg_enc_configure_properties (GstVideoEncoder * encoder,
+    gconstpointer snapshot)
+{
+  GstMppEnc *mppenc = GST_MPP_ENC (encoder);
+  const GstMppJpegEncPropertiesSnapshot *properties = snapshot;
+
+  gst_mpp_enc_cfg_set_s32 (mppenc, "jpeg:q_factor", properties->q_factor);
+  gst_mpp_enc_cfg_set_s32 (mppenc, "jpeg:qf_min", properties->qf_min);
+  gst_mpp_enc_cfg_set_s32 (mppenc, "jpeg:qf_max", properties->qf_max);
+
+  return TRUE;
 }
 
 static gboolean
 gst_mpp_jpeg_enc_apply_properties (GstVideoEncoder * encoder)
 {
-  GstMppJpegEnc *self = GST_MPP_JPEG_ENC (encoder);
-  GstMppEnc *mppenc = GST_MPP_ENC (encoder);
+  GstMppJpegEncPropertiesSnapshot properties;
 
-  if (G_LIKELY (!mppenc->prop_dirty))
-    return TRUE;
-
-  mpp_enc_cfg_set_s32 (mppenc->mpp_cfg, "jpeg:q_factor", self->q_factor);
-  mpp_enc_cfg_set_s32 (mppenc->mpp_cfg, "jpeg:qf_min", self->qf_min);
-  mpp_enc_cfg_set_s32 (mppenc->mpp_cfg, "jpeg:qf_max", self->qf_max);
-
-  return gst_mpp_enc_apply_properties (encoder);
+  return gst_mpp_enc_apply_properties_full (encoder,
+      gst_mpp_jpeg_enc_snapshot_properties,
+      gst_mpp_jpeg_enc_configure_properties, &properties, NULL);
 }
 
 static gboolean
@@ -194,6 +238,7 @@ static void
 gst_mpp_jpeg_enc_init (GstMppJpegEnc * self)
 {
   self->parent.mpp_type = MPP_VIDEO_CodingMJPEG;
+  self->parent.rc_mode = DEFAULT_PROP_RC_MODE;
 
   self->q_factor = DEFAULT_PROP_Q_FACTOR;
   self->qf_min = DEFAULT_PROP_QF_MIN;
@@ -225,12 +270,12 @@ gst_mpp_jpeg_enc_class_init (GstMppJpegEncClass * klass)
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   g_object_class_install_property (gobject_class, PROP_QF_MIN,
-      g_param_spec_int ("qf-min", "Min Quality fator",
+      g_param_spec_uint ("qf-min", "Min Quality fator",
           "Min Quality Factor", 1, 99, DEFAULT_PROP_QF_MIN,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   g_object_class_install_property (gobject_class, PROP_QF_MAX,
-      g_param_spec_int ("qf-max", "Max Quality fator",
+      g_param_spec_uint ("qf-max", "Max Quality fator",
           "Max Quality Factor", 1, 99, DEFAULT_PROP_QF_MAX,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
