@@ -233,6 +233,11 @@ gst_mpp_dec_reset (GstVideoDecoder * decoder, gboolean drain, gboolean final)
   self->flushing = final;
   self->draining = FALSE;
 
+  if (self->mpp_frame) {
+    mpp_frame_deinit (&self->mpp_frame);
+    self->mpp_frame = NULL;
+  }
+
   self->mpi->reset (self->mpp_ctx);
   self->task_ret = GST_FLOW_OK;
   self->decoded_frames = 0;
@@ -454,15 +459,12 @@ gst_mpp_dec_update_video_info (GstVideoDecoder * decoder, GstVideoFormat format,
   }
 
   if (self->dma_feature) {
-    GstCaps *tmp_caps = gst_caps_copy (output_state->caps);
-    gst_caps_set_features (tmp_caps, 0,
+    /*
+     * Keep output_state->caps fixed for gst_pad_set_caps(), and force
+     * DMABuf memory feature when requested by dma-feature=true.
+     */
+    gst_caps_set_features (output_state->caps, 0,
         gst_caps_features_new (GST_CAPS_FEATURE_MEMORY_DMABUF, NULL));
-
-    /* HACK: Expose dmabuf feature when the subset check is hacked */
-    if (gst_caps_is_subset (tmp_caps, output_state->caps))
-      gst_caps_replace (&output_state->caps, tmp_caps);
-
-    gst_caps_unref (tmp_caps);
   }
 
   *info = output_state->info;
@@ -826,43 +828,53 @@ out:
   return frame;
 }
 
-#ifdef HAVE_RGA
 static gboolean
-gst_mpp_dec_rga_convert (GstVideoDecoder * decoder, MppFrame mframe,
+gst_mpp_dec_convert (GstVideoDecoder * decoder, MppFrame mframe,
     GstBuffer * buffer)
 {
   GstMppDec *self = GST_MPP_DEC (decoder);
   GstVideoInfo *info = &self->info;
+  GstVideoCropMeta *crop = gst_buffer_get_video_crop_meta (buffer);
+  gboolean cropped = FALSE;
   GstMemory *mem;
-  gboolean ret;
+  gboolean ret = FALSE;
 
   GST_VIDEO_DECODER_STREAM_UNLOCK (decoder);
 
   mem = gst_allocator_alloc (self->allocator, GST_VIDEO_INFO_SIZE (info), NULL);
-  g_return_val_if_fail (mem, FALSE);
+  if (!mem)
+    goto out;
 
-  // Crop
-  GstVideoCropMeta *crop = gst_buffer_get_video_crop_meta (buffer);
-
-  if (!gst_mpp_rga_convert_from_mpp_frame (mframe, mem, info, self->rotation, crop)) {
-    GST_WARNING_OBJECT (self, "failed to convert");
-    gst_memory_unref (mem);
-    ret = FALSE;
-  } else {
-    gst_buffer_replace_all_memory (buffer, mem);
-    ret = TRUE;
+  /* Try the RGA tier first (DMA, zero copy), then the GPU tier */
+#ifdef HAVE_RGA
+  if (gst_mpp_use_rga ()) {
+    ret = gst_mpp_rga_convert_from_mpp_frame (mframe, mem, info,
+        self->rotation, crop);
+    cropped = ret && crop;
   }
+#endif
 
+  /* RGA is preferred for rotation (DMA rotation is cheaper); the GPU
+   * tier only rotates via its zero-copy path */
+  if (!ret && gst_mpp_use_gpu ())
+    ret = gst_mpp_gpu_convert_from_mpp_frame (mframe, mem, info,
+        self->rotation);
+
+  if (ret)
+    gst_buffer_replace_all_memory (buffer, mem);
+  else
+    gst_memory_unref (mem);
+
+out:
   GST_VIDEO_DECODER_STREAM_LOCK (decoder);
 
-  if (crop && ret) {
-    // We've already cropped the frame with RGA, remove the crop meta
+  /* RGA applies the crop while converting, so downstream must not crop the
+   * frame again. The GPU tier converts the whole frame and keeps the meta. */
+  if (cropped)
     gst_buffer_remove_meta (buffer, &crop->meta);
-  }
 
   return ret;
 }
-#endif
 
 static GstBuffer *
 gst_mpp_dec_get_gst_buffer (GstVideoDecoder * decoder, MppFrame mframe)
@@ -938,14 +950,8 @@ gst_mpp_dec_get_gst_buffer (GstVideoDecoder * decoder, MppFrame mframe)
   if (!self->convert)
     return buffer;
 
-#ifdef HAVE_RGA
-  if (gst_mpp_use_rga ()) {
-    if (!GST_VIDEO_INFO_IS_AFBC (info) && !GST_VIDEO_INFO_IS_RFBC (info) &&
-        !offset_x && !offset_y &&
-        gst_mpp_dec_rga_convert (decoder, mframe, buffer))
-      return buffer;
-  }
-#endif
+  if (gst_mpp_dec_convert (decoder, mframe, buffer))
+    return buffer;
 
   GST_WARNING_OBJECT (self, "unable to convert frame");
 
@@ -1002,19 +1008,28 @@ gst_mpp_dec_update_interlace_mode (GstVideoDecoder * decoder,
 static void
 gst_mpp_dec_loop (GstVideoDecoder * decoder)
 {
-  GstMppDecClass *klass = GST_MPP_DEC_GET_CLASS (decoder);
   GstMppDec *self = GST_MPP_DEC (decoder);
   GstVideoCodecFrame *frame;
   GstBuffer *buffer;
-  MppFrame mframe;
-  int timeout, mode;
+  MppFrame mframe = NULL;
+  MppPacket mpkt = NULL;
+  MppMeta meta;
+  gint timeout_ms, mode;
 
-  timeout = self->flushing ? MPP_TIMEOUT_NON_BLOCK : MPP_OUTPUT_TIMEOUT_MS;
+  timeout_ms = self->flushing ? MPP_TIMEOUT_NON_BLOCK : MPP_OUTPUT_TIMEOUT_MS;
+  self->mpi->control (self->mpp_ctx, MPP_SET_OUTPUT_TIMEOUT, &timeout_ms);
 
-  mframe = klass->poll_mpp_frame (decoder, timeout);
+  self->mpi->decode_get_frame (self->mpp_ctx, &mframe);
   /* Likely due to timeout */
   if (!mframe)
     return;
+
+  meta = mpp_frame_get_meta (mframe);
+  mpp_meta_get_packet (meta, KEY_INPUT_PACKET, &mpkt);
+  if (mpkt) {
+    mpp_meta_set_packet (meta, KEY_INPUT_PACKET, NULL);
+    mpp_packet_deinit (&mpkt);
+  }
 
   GST_VIDEO_DECODER_STREAM_LOCK (decoder);
 
@@ -1154,17 +1169,24 @@ drop:
 static GstFlowReturn
 gst_mpp_dec_send_mpp_packet_unlocked (GstVideoDecoder * decoder, MppPacket mpkt)
 {
-  GstMppDecClass *klass = GST_MPP_DEC_GET_CLASS (decoder);
   GstMppDec *self = GST_MPP_DEC (decoder);
+  gint timeout_ms = MPP_INPUT_TIMEOUT_MS;
+
+  self->mpi->control (self->mpp_ctx, MPP_SET_INPUT_TIMEOUT, &timeout_ms);
 
   while (1) {
+    MPP_RET ret;
+
     if (self->task_ret != GST_FLOW_OK)
       return self->task_ret;
 
-    switch (klass->send_mpp_packet (decoder, mpkt, MPP_INPUT_TIMEOUT_MS)) {
+    ret = self->mpi->decode_put_packet (self->mpp_ctx, mpkt);
+    switch (ret) {
       case MPP_OK:
         return GST_FLOW_OK;
       case MPP_ERR_BUFFER_FULL:
+        /* fall-through */
+      case MPP_ERR_TIMEOUT:
         /* Timed out */
         break;
       default:
@@ -1183,6 +1205,7 @@ gst_mpp_dec_handle_frame (GstVideoDecoder * decoder, GstVideoCodecFrame * frame)
   GstBuffer *tmp;
   GstFlowReturn ret;
   MppPacket mpkt = NULL;
+  gboolean packet_has_buffer = FALSE;
 
   GST_MPP_DEC_LOCK (decoder);
 
@@ -1221,6 +1244,12 @@ gst_mpp_dec_handle_frame (GstVideoDecoder * decoder, GstVideoCodecFrame * frame)
 
   mpp_packet_set_pts (mpkt, self->use_mpp_pts ? -1 : (gint64) frame->pts);
 
+  /* Zero-copy packets (MppBuffer attached) are handed over to MPP and may
+   * already be recycled once decode_put_packet() returns, while copy-path
+   * packets are cloned synchronously and stay owned by the caller.
+   * Snapshot the mode before the send. */
+  packet_has_buffer = (mpp_packet_get_buffer (mpkt) != NULL);
+
   if (GST_CLOCK_TIME_IS_VALID (frame->pts))
     self->seen_valid_pts = TRUE;
 
@@ -1233,8 +1262,11 @@ gst_mpp_dec_handle_frame (GstVideoDecoder * decoder, GstVideoCodecFrame * frame)
   else if (G_UNLIKELY (ret != GST_FLOW_OK))
     goto drop;
 
-  /* NOTE: Sub-class takes over the MPP packet when success */
-  mpkt = NULL;
+  if (packet_has_buffer)
+    mpkt = NULL;
+  else
+    mpp_packet_deinit (&mpkt);
+
   gst_buffer_unmap (frame->input_buffer, &mapinfo);
 
   /* No need to keep input arround */
@@ -1274,8 +1306,17 @@ send_error:
 drop:
   GST_WARNING_OBJECT (self, "can't handle this frame");
 
-  if (mpkt)
+  if (mpkt) {
+    MppFrame mframe = NULL;
+    MppMeta meta;
+
+    meta = mpp_packet_get_meta (mpkt);
+    mpp_meta_get_frame (meta, KEY_OUTPUT_FRAME, &mframe);
+    if (mframe)
+      mpp_frame_deinit (&mframe);
+
     mpp_packet_deinit (&mpkt);
+  }
 
   gst_buffer_unmap (frame->input_buffer, &mapinfo);
   gst_video_decoder_release_frame (decoder, frame);
@@ -1354,7 +1395,9 @@ gst_mpp_dec_class_init (GstMppDecClass * klass)
   gobject_class->get_property = GST_DEBUG_FUNCPTR (gst_mpp_dec_get_property);
 
 #ifdef HAVE_RGA
-  if (!gst_mpp_use_rga ())
+  /* The GPU tier rotates (zero-copy path) and scales (viewport) too,
+   * so keep the properties installed while any tier is available */
+  if (!gst_mpp_use_rga () && !gst_mpp_use_gpu ())
     goto no_rga;
 
   g_object_class_install_property (gobject_class, PROP_ROTATION,

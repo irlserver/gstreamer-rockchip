@@ -742,6 +742,8 @@ gst_mpp_enc_set_src_caps (GstVideoEncoder * encoder, GstCaps * caps)
   return gst_video_encoder_negotiate (encoder);
 }
 
+static gboolean gst_mpp_enc_poll_packet_locked (GstVideoEncoder * encoder);
+
 static void
 gst_mpp_enc_stop_task (GstVideoEncoder * encoder, gboolean drain)
 {
@@ -793,6 +795,15 @@ gst_mpp_enc_reset (GstVideoEncoder * encoder, gboolean drain, gboolean final)
   self->draining = FALSE;
 
   self->mpi->reset (self->mpp_ctx);
+
+  /* NOTE: MPP does not clean up its encoder output queue on reset.
+   * Packets left over when the encoding loop paused early, or delivered
+   * by the async encoding thread while the reset is being processed,
+   * would stay queued and be misattributed to the next session's frames.
+   * Poll them through the normal output path.
+   */
+  while (gst_mpp_enc_poll_packet_locked (encoder));
+
   self->task_ret = GST_FLOW_OK;
   self->pending_frames = 0;
 
@@ -1164,7 +1175,7 @@ gst_mpp_enc_propose_allocation (GstVideoEncoder * encoder, GstQuery * query)
   GstBufferPool *pool;
   GstVideoInfo info;
   GstCaps *caps;
-  guint size;
+  guint size, min_buffers;
 
   GST_DEBUG_OBJECT (self, "propose allocation");
 
@@ -1196,7 +1207,11 @@ gst_mpp_enc_propose_allocation (GstVideoEncoder * encoder, GstQuery * query)
   pool = gst_video_buffer_pool_new ();
 
   config = gst_buffer_pool_get_config (pool);
-  gst_buffer_pool_config_set_params (config, caps, size, 0, 0);
+  /* The encoder holds up to max-pending frames in MPP plus the one waiting in
+   * handle_frame for a slot; a capture source must keep that many beyond what it
+   * needs itself, or it runs dry (rkisp drops frames when no buffer is queued). */
+  min_buffers = self->max_pending + 1;
+  gst_buffer_pool_config_set_params (config, caps, size, min_buffers, 0);
   gst_buffer_pool_config_set_allocator (config, self->allocator, NULL);
 
   /* Expose alignment to pool */
@@ -1206,7 +1221,7 @@ gst_mpp_enc_propose_allocation (GstVideoEncoder * encoder, GstQuery * query)
 
   gst_buffer_pool_set_config (pool, config);
 
-  gst_query_add_allocation_pool (query, pool, size, 2, 0);
+  gst_query_add_allocation_pool (query, pool, size, min_buffers, 0);
   gst_query_add_allocation_param (query, self->allocator, NULL);
 
   gst_object_unref (pool);

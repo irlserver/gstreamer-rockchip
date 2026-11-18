@@ -48,6 +48,7 @@ struct _GstMppJpegEnc
 #define parent_class gst_mpp_jpeg_enc_parent_class
 G_DEFINE_TYPE (GstMppJpegEnc, gst_mpp_jpeg_enc, GST_TYPE_MPP_ENC);
 
+#define DEFAULT_PROP_RC_MODE MPP_ENC_RC_MODE_FIXQP
 #define DEFAULT_PROP_Q_FACTOR 80
 #define DEFAULT_PROP_QF_MIN 1
 #define DEFAULT_PROP_QF_MAX 99
@@ -72,10 +73,13 @@ GST_STATIC_PAD_TEMPLATE ("src",
         GST_MPP_JPEG_ENC_SIZE_CAPS "," "sof-marker = { 0 }"));
 
 static GstStaticPadTemplate gst_mpp_jpeg_enc_sink_template =
-GST_STATIC_PAD_TEMPLATE ("sink",
+    GST_STATIC_PAD_TEMPLATE ("sink",
     GST_PAD_SINK,
     GST_PAD_ALWAYS,
     GST_STATIC_CAPS ("video/x-raw,"
+        "format = (string) { " MPP_ENC_FORMATS " }, "
+        GST_MPP_JPEG_ENC_SIZE_CAPS ";"
+        "video/x-raw(memory:DMABuf),"
         "format = (string) { " MPP_ENC_FORMATS " }, "
         GST_MPP_JPEG_ENC_SIZE_CAPS));
 
@@ -194,6 +198,7 @@ static void
 gst_mpp_jpeg_enc_init (GstMppJpegEnc * self)
 {
   self->parent.mpp_type = MPP_VIDEO_CodingMJPEG;
+  self->parent.rc_mode = DEFAULT_PROP_RC_MODE;
 
   self->q_factor = DEFAULT_PROP_Q_FACTOR;
   self->qf_min = DEFAULT_PROP_QF_MIN;
@@ -225,12 +230,12 @@ gst_mpp_jpeg_enc_class_init (GstMppJpegEncClass * klass)
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   g_object_class_install_property (gobject_class, PROP_QF_MIN,
-      g_param_spec_int ("qf-min", "Min Quality fator",
+      g_param_spec_uint ("qf-min", "Min Quality fator",
           "Min Quality Factor", 1, 99, DEFAULT_PROP_QF_MIN,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   g_object_class_install_property (gobject_class, PROP_QF_MAX,
-      g_param_spec_int ("qf-max", "Max Quality fator",
+      g_param_spec_uint ("qf-max", "Max Quality fator",
           "Max Quality Factor", 1, 99, DEFAULT_PROP_QF_MAX,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 

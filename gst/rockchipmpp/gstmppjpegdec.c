@@ -44,8 +44,6 @@ struct _GstMppJpegDec
 
   /* group for input packet buffer allocations */
   MppBufferGroup input_group;
-
-  MppPacket eos_packet;
 };
 
 #define parent_class gst_mpp_jpeg_dec_parent_class
@@ -176,23 +174,13 @@ gst_mpp_jpeg_dec_start (GstVideoDecoder * decoder)
   GstVideoDecoderClass *pclass = GST_VIDEO_DECODER_CLASS (parent_class);
   GstMppJpegDec *self = GST_MPP_JPEG_DEC (decoder);
   GstMppDec *mppdec = GST_MPP_DEC (decoder);
-  MppBuffer mbuf;
 
   GST_DEBUG_OBJECT (self, "starting");
 
   if (mpp_buffer_group_get_internal (&self->input_group, MPP_BUFFER_TYPE_DRM))
     return FALSE;
 
-  /* Prepare EOS packet */
-  mpp_buffer_get (self->input_group, &mbuf, 1);
-  mpp_packet_init_with_buffer (&self->eos_packet, mbuf);
-  mpp_buffer_put (mbuf);
-  mpp_packet_set_size (self->eos_packet, 0);
-  mpp_packet_set_length (self->eos_packet, 0);
-  mpp_packet_set_eos (self->eos_packet);
-
   if (!pclass->start (decoder)) {
-    mpp_packet_deinit (&self->eos_packet);
     mpp_buffer_group_put (self->input_group);
     return FALSE;
   }
@@ -214,12 +202,55 @@ gst_mpp_jpeg_dec_stop (GstVideoDecoder * decoder)
 
   pclass->stop (decoder);
 
-  mpp_packet_deinit (&self->eos_packet);
   mpp_buffer_group_put (self->input_group);
 
   GST_DEBUG_OBJECT (self, "stopped");
 
   return TRUE;
+}
+
+static guint
+gst_mpp_jpeg_dec_required_size (GstVideoDecoder * decoder)
+{
+  GstMppDec *mppdec = GST_MPP_DEC (decoder);
+  GstVideoInfo *info = &mppdec->info;
+  GstVideoFormat gst_format;
+  MppFrameFormat mpp_format;
+  MppSysCfg cfg;
+  guint width, height, hstride, vstride, size;
+
+  gst_format = GST_VIDEO_INFO_FORMAT (info);
+  mpp_format = gst_mpp_gst_format_to_mpp_format (gst_format);
+
+  width = GST_VIDEO_INFO_WIDTH (info);
+  height = GST_VIDEO_INFO_HEIGHT (info);
+  hstride = GST_MPP_VIDEO_INFO_HSTRIDE (info);
+  vstride = GST_MPP_VIDEO_INFO_VSTRIDE (info);
+
+  /* FIXME: Workaround MPP's JPEG parser size requirement issue (w * h * 4) */
+  size = width * height * 4;
+
+  /* Based on mpp/base/test/mpp_sys_cfg_test.c */
+
+  if (mpp_sys_cfg_get (&cfg))
+    return size;
+
+  mpp_sys_cfg_set_u32 (cfg, "dec_buf_chk:type", 1);
+  mpp_sys_cfg_set_u32 (cfg, "dec_buf_chk:enable", 1);
+  mpp_sys_cfg_set_u32 (cfg, "dec_buf_chk:type", MPP_VIDEO_CodingMJPEG);
+  mpp_sys_cfg_set_u32 (cfg, "dec_buf_chk:fmt_codec", mpp_format);
+  mpp_sys_cfg_set_u32 (cfg, "dec_buf_chk:fmt_fbc", 0);
+  mpp_sys_cfg_set_u32 (cfg, "dec_buf_chk:width", width);
+  mpp_sys_cfg_set_u32 (cfg, "dec_buf_chk:height", height);
+  mpp_sys_cfg_set_u32 (cfg, "dec_buf_chk:h_stride_by_byte", hstride);
+  mpp_sys_cfg_set_u32 (cfg, "dec_buf_chk:v_stride", vstride);
+
+  mpp_sys_cfg_ioctl (cfg);
+  mpp_sys_cfg_get_u32 (cfg, "dec_buf_chk:size_total", &size);
+
+  mpp_sys_cfg_put (cfg);
+
+  return size;
 }
 
 static gboolean
@@ -316,11 +347,7 @@ gst_mpp_jpeg_dec_set_format (GstVideoDecoder * decoder,
   if (!gst_mpp_video_info_align (info, 0, 0))
     return FALSE;
 
-  self->buf_size = GST_VIDEO_INFO_SIZE (info);
-
-  /* FIXME: Workaround MPP's JPEG parser size requirement issue (w * h * 2) */
-  self->buf_size =
-      MAX (self->buf_size, GST_VIDEO_INFO_PLANE_OFFSET (info, 1) * 2);
+  self->buf_size = gst_mpp_jpeg_dec_required_size (decoder);
 
   /* Update final output info */
   return gst_mpp_dec_update_simple_video_info (decoder, dst_format,
@@ -332,8 +359,11 @@ gst_mpp_jpeg_dec_get_mpp_packet (GstVideoDecoder * decoder,
     GstMapInfo * mapinfo)
 {
   GstMppJpegDec *self = GST_MPP_JPEG_DEC (decoder);
+  GstMppDec *mppdec = GST_MPP_DEC (decoder);
   MppBuffer mbuf = NULL;
-  MppPacket mpkt = NULL;
+  MppFrame mframe;
+  MppPacket mpkt;
+  MppMeta meta;
 
   mpp_buffer_get (self->input_group, &mbuf, mapinfo->size);
   if (G_UNLIKELY (!mbuf))
@@ -350,131 +380,98 @@ gst_mpp_jpeg_dec_get_mpp_packet (GstVideoDecoder * decoder,
   mpp_packet_set_size (mpkt, mapinfo->size);
   mpp_packet_set_length (mpkt, mapinfo->size);
 
-  return mpkt;
-}
-
-static MPP_RET
-gst_mpp_jpeg_dec_send_mpp_packet (GstVideoDecoder * decoder,
-    MppPacket mpkt, gint timeout_ms)
-{
-  GstMppJpegDec *self = GST_MPP_JPEG_DEC (decoder);
-  GstMppDec *mppdec = GST_MPP_DEC (decoder);
-  MppBuffer mbuf;
-  MppFrame mframe = NULL;
-  MppTask mtask = NULL;
-  MppMeta meta;
-
-  mppdec->mpi->poll (mppdec->mpp_ctx, MPP_PORT_INPUT, timeout_ms);
-  mppdec->mpi->dequeue (mppdec->mpp_ctx, MPP_PORT_INPUT, &mtask);
-  if (G_UNLIKELY (!mtask))
-    goto error;
-
-  mpp_task_meta_set_packet (mtask, KEY_INPUT_PACKET, mpkt);
+  /* Create the output frame */
 
   mbuf = gst_mpp_allocator_alloc_mppbuf (mppdec->allocator, self->buf_size);
-  if (G_UNLIKELY (!mbuf))
-    goto error;
+  if (G_UNLIKELY (!mbuf)) {
+    mpp_packet_deinit (&mpkt);
+    return NULL;
+  }
 
   mpp_frame_init (&mframe);
   mpp_frame_set_buffer (mframe, mbuf);
   mpp_buffer_put (mbuf);
 
-  meta = mpp_frame_get_meta (mframe);
-  mpp_meta_set_packet (meta, KEY_INPUT_PACKET, mpkt);
+  meta = mpp_packet_get_meta (mpkt);
+  mpp_meta_set_frame (meta, KEY_OUTPUT_FRAME, mframe);
 
-  mpp_task_meta_set_frame (mtask, KEY_OUTPUT_FRAME, mframe);
-
-  if (mppdec->mpi->enqueue (mppdec->mpp_ctx, MPP_PORT_INPUT, mtask))
-    goto error;
-
-  return MPP_OK;
-
-error:
-  if (mtask) {
-    mpp_task_meta_set_packet (mtask, KEY_INPUT_PACKET, NULL);
-    mpp_task_meta_set_frame (mtask, KEY_OUTPUT_FRAME, NULL);
-    mppdec->mpi->enqueue (mppdec->mpp_ctx, MPP_PORT_INPUT, mtask);
-  }
-
-  if (mframe)
-    mpp_frame_deinit (&mframe);
-
-  return MPP_NOK;
+  return mpkt;
 }
 
-static MppFrame
-gst_mpp_jpeg_dec_poll_mpp_frame (GstVideoDecoder * decoder, gint timeout_ms)
+static void
+gst_mpp_jpeg_dec_drain_output (GstVideoDecoder * decoder)
 {
   GstMppDec *mppdec = GST_MPP_DEC (decoder);
-  MppPacket mpkt = NULL;
-  MppTask mtask = NULL;
-  MppFrame mframe = NULL;
-  MppMeta meta;
+  gint timeout_ms = MPP_TIMEOUT_NON_BLOCK;
 
-  if (mppdec->mpi->poll (mppdec->mpp_ctx, MPP_PORT_OUTPUT, timeout_ms))
-    return NULL;
+  /* Leftover output frames carry our input packet as KEY_INPUT_PACKET
+   * meta.  mpi->reset() discards queued frames without releasing the
+   * attached packets, so poll them out here and release both. */
+  mppdec->mpi->control (mppdec->mpp_ctx, MPP_SET_OUTPUT_TIMEOUT, &timeout_ms);
 
-  mppdec->mpi->dequeue (mppdec->mpp_ctx, MPP_PORT_OUTPUT, &mtask);
-  if (!mtask)
-    return NULL;
+  while (1) {
+    MppMeta meta;
+    MppPacket mpkt = NULL;
+    MppFrame mframe = NULL;
 
-  mpp_task_meta_get_frame (mtask, KEY_OUTPUT_FRAME, &mframe);
-  if (!mframe) {
-    mppdec->mpi->enqueue (mppdec->mpp_ctx, MPP_PORT_OUTPUT, mtask);
-    return NULL;
+    mppdec->mpi->decode_get_frame (mppdec->mpp_ctx, &mframe);
+    if (!mframe)
+      break;
+
+    meta = mpp_frame_get_meta (mframe);
+    if (meta)
+      mpp_meta_get_packet (meta, KEY_INPUT_PACKET, &mpkt);
+
+    if (mpkt) {
+      mpp_meta_set_packet (meta, KEY_INPUT_PACKET, NULL);
+      mpp_packet_deinit (&mpkt);
+    }
+
+    mpp_frame_deinit (&mframe);
   }
-
-  meta = mpp_frame_get_meta (mframe);
-  mpp_meta_get_packet (meta, KEY_INPUT_PACKET, &mpkt);
-  if (mpkt)
-    mpp_packet_deinit (&mpkt);
-
-  mppdec->mpi->enqueue (mppdec->mpp_ctx, MPP_PORT_OUTPUT, mtask);
-
-  return mframe;
 }
 
 static gboolean
-gst_mpp_jpeg_dec_shutdown (GstVideoDecoder * decoder, gboolean drain UNUSED)
+gst_mpp_jpeg_dec_shutdown (GstVideoDecoder * decoder, gboolean drain)
 {
   GstMppJpegDec *self = GST_MPP_JPEG_DEC (decoder);
   GstMppDec *mppdec = GST_MPP_DEC (decoder);
-  MppFrame mframe = NULL;
-  MppTask mtask = NULL;
+  MppFrame mframe;
+  MppPacket mpkt;
+  MppBuffer mbuf;
+  MppMeta meta;
+  MPP_RET ret;
+
+  /* It's safe to stop decoding immediately */
+  if (!drain) {
+    gst_mpp_jpeg_dec_drain_output (decoder);
+    mppdec->mpi->reset (mppdec->mpp_ctx);
+    return FALSE;
+  }
 
   GST_DEBUG_OBJECT (self, "sending EOS");
 
-  mppdec->mpi->poll (mppdec->mpp_ctx, MPP_PORT_INPUT, MPP_POLL_BLOCK);
-  mppdec->mpi->dequeue (mppdec->mpp_ctx, MPP_PORT_INPUT, &mtask);
-  if (!mtask)
-    goto error;
-
-  mpp_task_meta_set_packet (mtask, KEY_INPUT_PACKET, self->eos_packet);
+  /* Prepare EOS packet */
+  mpp_buffer_get (self->input_group, &mbuf, 1);
+  mpp_packet_init_with_buffer (&mpkt, mbuf);
+  mpp_buffer_put (mbuf);
+  mpp_packet_set_size (mpkt, 0);
+  mpp_packet_set_length (mpkt, 0);
+  mpp_packet_set_eos (mpkt);
 
   mpp_frame_init (&mframe);
-  if (!mframe)
-    goto error;
+  meta = mpp_packet_get_meta (mpkt);
+  mpp_meta_set_frame (meta, KEY_OUTPUT_FRAME, mframe);
 
-  mpp_task_meta_set_frame (mtask, KEY_OUTPUT_FRAME, mframe);
+  while (1) {
+    ret = mppdec->mpi->decode_put_packet (mppdec->mpp_ctx, mpkt);
+    if (!ret)
+      break;
 
-  if (mppdec->mpi->enqueue (mppdec->mpp_ctx, MPP_PORT_INPUT, mtask))
-    goto error;
-
-  return TRUE;
-
-error:
-  GST_WARNING_OBJECT (self, "failed to send EOS");
-
-  if (mtask) {
-    mpp_task_meta_set_packet (mtask, KEY_INPUT_PACKET, NULL);
-    mpp_task_meta_set_frame (mtask, KEY_OUTPUT_FRAME, NULL);
-    mppdec->mpi->enqueue (mppdec->mpp_ctx, MPP_PORT_INPUT, mtask);
+    g_usleep (1000);
   }
 
-  if (mframe)
-    mpp_frame_deinit (&mframe);
-
-  return FALSE;
+  return TRUE;
 }
 
 #define GST_TYPE_MPP_JPEG_DEC_FORMAT (gst_mpp_jpeg_dec_format_get_type ())
@@ -557,9 +554,6 @@ gst_mpp_jpeg_dec_class_init (GstMppJpegDecClass * klass)
 
   pclass->startup = NULL;
   pclass->get_mpp_packet = GST_DEBUG_FUNCPTR (gst_mpp_jpeg_dec_get_mpp_packet);
-  pclass->send_mpp_packet =
-      GST_DEBUG_FUNCPTR (gst_mpp_jpeg_dec_send_mpp_packet);
-  pclass->poll_mpp_frame = GST_DEBUG_FUNCPTR (gst_mpp_jpeg_dec_poll_mpp_frame);
   pclass->shutdown = GST_DEBUG_FUNCPTR (gst_mpp_jpeg_dec_shutdown);
 
   gobject_class->set_property =

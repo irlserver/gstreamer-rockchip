@@ -37,8 +37,6 @@ GST_DEBUG_CATEGORY (GST_CAT_DEFAULT);
 struct _GstMppVideoDec
 {
   GstMppDec parent;
-
-  gint poll_timeout;
 };
 
 #define parent_class gst_mpp_video_dec_parent_class
@@ -193,7 +191,6 @@ gst_mpp_video_dec_set_format (GstVideoDecoder * decoder,
 static gboolean
 gst_mpp_video_dec_startup (GstVideoDecoder * decoder)
 {
-  GstMppVideoDec *self = GST_MPP_VIDEO_DEC (decoder);
   GstMppDec *mppdec = GST_MPP_DEC (decoder);
   GstVideoCodecState *state = mppdec->input_state;
   GstBuffer *codec_data = state->codec_data;
@@ -220,8 +217,6 @@ gst_mpp_video_dec_startup (GstVideoDecoder * decoder)
         &mpp_format);
   }
 
-  self->poll_timeout = 0;
-
   return TRUE;
 }
 
@@ -234,42 +229,10 @@ gst_mpp_video_dec_get_mpp_packet (GstVideoDecoder * decoder UNUSED,
   return mpkt;
 }
 
-static MPP_RET
-gst_mpp_video_dec_send_mpp_packet (GstVideoDecoder * decoder,
-    MppPacket mpkt, gint timeout_ms)
-{
-  GstMppDec *mppdec = GST_MPP_DEC (decoder);
-  MPP_RET ret;
-
-  mppdec->mpi->control (mppdec->mpp_ctx, MPP_SET_INPUT_TIMEOUT, &timeout_ms);
-
-  ret = mppdec->mpi->decode_put_packet (mppdec->mpp_ctx, mpkt);
-  if (!ret)
-    mpp_packet_deinit (&mpkt);
-
-  return ret;
-}
-
-static MppFrame
-gst_mpp_video_dec_poll_mpp_frame (GstVideoDecoder * decoder, gint timeout_ms)
-{
-  GstMppVideoDec *self = GST_MPP_VIDEO_DEC (decoder);
-  GstMppDec *mppdec = GST_MPP_DEC (decoder);
-  MppFrame mframe = NULL;
-
-  if (self->poll_timeout != timeout_ms) {
-    self->poll_timeout = timeout_ms;
-    mppdec->mpi->control (mppdec->mpp_ctx, MPP_SET_OUTPUT_TIMEOUT, &timeout_ms);
-  }
-
-  mppdec->mpi->decode_get_frame (mppdec->mpp_ctx, &mframe);
-
-  return mframe;
-}
-
 static gboolean
 gst_mpp_video_dec_shutdown (GstVideoDecoder * decoder, gboolean drain)
 {
+  GstMppVideoDec *self = GST_MPP_VIDEO_DEC (decoder);
   GstMppDec *mppdec = GST_MPP_DEC (decoder);
   MppPacket mpkt;
   MPP_RET ret;
@@ -280,6 +243,8 @@ gst_mpp_video_dec_shutdown (GstVideoDecoder * decoder, gboolean drain)
     mppdec->mpi->reset (mppdec->mpp_ctx);
     return FALSE;
   }
+
+  GST_DEBUG_OBJECT (self, "sending EOS");
 
   mpp_packet_init (&mpkt, NULL, 0);
   mpp_packet_set_eos (mpkt);
@@ -368,9 +333,6 @@ gst_mpp_video_dec_class_init (GstMppVideoDecClass * klass)
 
   pclass->startup = GST_DEBUG_FUNCPTR (gst_mpp_video_dec_startup);
   pclass->get_mpp_packet = GST_DEBUG_FUNCPTR (gst_mpp_video_dec_get_mpp_packet);
-  pclass->send_mpp_packet =
-      GST_DEBUG_FUNCPTR (gst_mpp_video_dec_send_mpp_packet);
-  pclass->poll_mpp_frame = GST_DEBUG_FUNCPTR (gst_mpp_video_dec_poll_mpp_frame);
   pclass->shutdown = GST_DEBUG_FUNCPTR (gst_mpp_video_dec_shutdown);
 
   gobject_class->set_property =
@@ -380,7 +342,7 @@ gst_mpp_video_dec_class_init (GstMppVideoDecClass * klass)
 
   gst_mpp_video_dec_setup_default_format ();
 
-#ifdef HAVE_RGA
+#if defined (HAVE_RGA) || defined (HAVE_GPU)
   g_object_class_install_property (gobject_class, PROP_FORMAT,
       g_param_spec_enum ("format", "Prefered output format",
           "Prefered output format",
