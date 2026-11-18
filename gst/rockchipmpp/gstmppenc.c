@@ -1007,7 +1007,7 @@ gst_mpp_enc_apply_properties_full (GstVideoEncoder * encoder,
    * part of the pinned MPP's config surface, and gst_mpp_enc_cfg_set_* now
    * reports a build that disagrees rather than letting the write vanish. */
   gst_mpp_enc_cfg_set_s32 (self, "tune:scene_mode", properties.scene_mode);
-  gst_mpp_enc_cfg_set_s32 (self, "tune:anti_flicker_str",
+  gst_mpp_enc_cfg_set_s32 (self, "tune:atf_str",
       properties.anti_flicker);
 
   if (self->cfg_error) {
